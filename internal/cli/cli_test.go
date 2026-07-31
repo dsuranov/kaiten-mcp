@@ -77,6 +77,7 @@ func TestEveryDataCommandProducesDocumentedJSONKind(t *testing.T) {
 		{[]string{"cards", "delete", "5"}, false},
 		{[]string{"comments", "list", "--card-id", "5"}, true},
 		{[]string{"comments", "add", "--card-id", "5", "--text", "Comment"}, false},
+		{[]string{"blockers", "block", "--card-id", "5"}, false},
 		{[]string{"blockers", "block", "--card-id", "5", "--reason", "Waiting"}, false},
 		{[]string{"blockers", "unblock", "--card-id", "5", "--blocker-id", "6"}, false},
 		{[]string{"blockers", "delete", "--card-id", "5", "--blocker-id", "6"}, false},
@@ -123,7 +124,6 @@ func TestInvalidInputDoesNotLoadConfigOrSendRequest(t *testing.T) {
 		{"cards", "create", "--title", "x", "--board-id", "2", "--column-id", "3", "--due-date="},
 		{"cards", "update", "5"},
 		{"comments", "add", "--card-id", "5", "--text", ""},
-		{"blockers", "block", "--card-id", "5"},
 		{"blockers", "block", "--card-id", "5", "--reason="},
 		{"checklists", "check", "--card-id", "5", "--checklist-id", "7", "--item-id", "bad"},
 	}
@@ -138,6 +138,33 @@ func TestInvalidInputDoesNotLoadConfigOrSendRequest(t *testing.T) {
 	}
 	if requests.Load() != 0 {
 		t.Fatalf("validation sent %d request(s)", requests.Load())
+	}
+}
+
+func TestBlockWithoutReasonSendsDocumentedNonemptyDefault(t *testing.T) {
+	var gotReason string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/cards/5/blockers" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotReason, _ = body["reason"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":99}`)
+	}))
+	defer server.Close()
+	configureCLI(t, server.URL)
+
+	var stdout, stderr bytes.Buffer
+	status := Run(context.Background(), []string{"blockers", "block", "--card-id", "5"}, strings.NewReader(""), &stdout, &stderr, Dependencies{})
+	if status != 0 {
+		t.Fatalf("status %d, stderr=%s", status, stderr.String())
+	}
+	if gotReason != defaultBlockReason || strings.TrimSpace(gotReason) == "" {
+		t.Fatalf("reason = %q, want nonempty documented default %q", gotReason, defaultBlockReason)
 	}
 }
 

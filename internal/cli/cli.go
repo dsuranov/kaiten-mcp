@@ -39,6 +39,8 @@ type commandSpec struct {
 	flags       []flagDef
 }
 
+const defaultBlockReason = "Blocked via Kaiten CLI"
+
 var commandSpecs = []commandSpec{
 	{group: "spaces", name: "list", usage: "kaiten spaces list"},
 	{group: "spaces", name: "get", usage: "kaiten spaces get <space_id>", positionals: 1},
@@ -267,10 +269,11 @@ func execute(ctx context.Context, spec commandSpec, command parsedCommand) (any,
 		}
 		return service.Mutate(ctx, http.MethodPost, fmt.Sprintf("/cards/%d/comments", validated.ids["card-id"]), map[string]any{"text": command.values["text"], "type": commentType})
 	case "blockers/block":
-		body := map[string]any{}
+		reason := defaultBlockReason
 		if command.present["reason"] {
-			body["reason"] = command.values["reason"]
+			reason = command.values["reason"]
 		}
+		body := map[string]any{"reason": reason}
 		return service.Mutate(ctx, http.MethodPost, fmt.Sprintf("/cards/%d/blockers", validated.ids["card-id"]), body)
 	case "blockers/unblock", "blockers/delete":
 		id := validated.ids["blocker-id"]
@@ -363,12 +366,13 @@ func validateLocal(spec commandSpec, command parsedCommand) (validation, error) 
 		}
 	}
 	if spec.group == "blockers" && spec.name == "block" {
-		reason := strings.TrimSpace(command.values["reason"])
-		if !command.present["reason"] || reason == "" {
-			return result, errors.New("--reason is required by the Kaiten block-card API and must not be empty")
-		}
-		if len([]rune(command.values["reason"])) > 4096 {
-			return result, errors.New("--reason must not exceed 4096 characters")
+		if command.present["reason"] {
+			if strings.TrimSpace(command.values["reason"]) == "" {
+				return result, errors.New("--reason must not be empty when provided")
+			}
+			if len([]rune(command.values["reason"])) > 4096 {
+				return result, errors.New("--reason must not exceed 4096 characters")
+			}
 		}
 	}
 	if spec.group == "cards" && spec.name == "update" {

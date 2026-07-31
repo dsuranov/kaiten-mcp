@@ -98,6 +98,10 @@ kaiten checklists uncheck --card-id 126 --checklist-id 7 --item-id 8
 kaiten checklists delete --card-id 126 --checklist-id 7
 ```
 
+When `--reason` is omitted from `blockers block`, the CLI sends
+`Blocked via Kaiten CLI`. This keeps the optional CLI flag compatible with the
+current public API, which requires a nonempty blocker reason.
+
 Every positive numeric ID, required text value, enumeration, and date is
 validated before mutation. Empty required text is rejected.
 
