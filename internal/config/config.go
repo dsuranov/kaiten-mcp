@@ -57,7 +57,11 @@ type Overrides struct {
 // Load reads process variables and at most one .env file. The .env search order
 // is current working directory, then the executable directory.
 func Load(requireCredentials bool, overrides Overrides) (Config, error) {
-	values := processEnvironment()
+	processValues := processEnvironment()
+	values := make(map[string]string, len(processValues))
+	for key, value := range processValues {
+		values[key] = value
+	}
 	dotEnvPath := ""
 	for _, candidate := range dotEnvCandidates() {
 		if candidate == "" {
@@ -79,8 +83,8 @@ func Load(requireCredentials bool, overrides Overrides) (Config, error) {
 		break
 	}
 
-	token := firstNonEmpty(values["KAITEN_API_TOKEN"], values["KAITEN_TOKEN"])
-	baseRaw := firstNonEmpty(values["KAITEN_URL"], values["KAITEN_BASE_URL"])
+	token := prioritizedAlias(processValues, values, "KAITEN_API_TOKEN", "KAITEN_TOKEN")
+	baseRaw := prioritizedAlias(processValues, values, "KAITEN_URL", "KAITEN_BASE_URL")
 	if requireCredentials && token == "" {
 		return Config{}, errors.New("KAITEN_API_TOKEN is required")
 	}
@@ -96,10 +100,7 @@ func Load(requireCredentials bool, overrides Overrides) (Config, error) {
 	}
 
 	prefix := normalizePrefix(valueOr(values, "KAITEN_API_PREFIX", defaultPrefix))
-	rateRaw := values["KAITEN_RATE_LIMIT_RPS"]
-	if _, set := values["KAITEN_RATE_LIMIT_RPS"]; !set {
-		rateRaw = values["KAITEN_RATE_LIMIT"]
-	}
+	rateRaw := prioritizedRate(processValues, values)
 	rate, err := positiveFloat("KAITEN_RATE_LIMIT_RPS", rateRaw, defaultRateRPS)
 	if err != nil {
 		return Config{}, err
@@ -262,6 +263,29 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func prioritizedAlias(processValues, mergedValues map[string]string, primary, alias string) string {
+	if value := strings.TrimSpace(processValues[primary]); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(processValues[alias]); value != "" {
+		return value
+	}
+	return firstNonEmpty(mergedValues[primary], mergedValues[alias])
+}
+
+func prioritizedRate(processValues, mergedValues map[string]string) string {
+	if value, set := processValues["KAITEN_RATE_LIMIT_RPS"]; set {
+		return value
+	}
+	if value, set := processValues["KAITEN_RATE_LIMIT"]; set {
+		return value
+	}
+	if value, set := mergedValues["KAITEN_RATE_LIMIT_RPS"]; set {
+		return value
+	}
+	return mergedValues["KAITEN_RATE_LIMIT"]
 }
 
 func valueOr(values map[string]string, key, fallback string) string {

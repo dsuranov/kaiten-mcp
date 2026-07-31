@@ -74,3 +74,46 @@ func TestOverridesTakePriority(t *testing.T) {
 		t.Fatalf("overrides not applied: %+v", cfg)
 	}
 }
+
+func TestProcessAliasBeatsDotEnvPrimary(t *testing.T) {
+	tmp := t.TempDir()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	if err := os.WriteFile(filepath.Join(tmp, ".env"), []byte("KAITEN_API_TOKEN=file-primary\nKAITEN_URL=https://file-primary.example\nKAITEN_RATE_LIMIT_RPS=9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsetEnvironment(t, "KAITEN_API_TOKEN")
+	unsetEnvironment(t, "KAITEN_URL")
+	unsetEnvironment(t, "KAITEN_RATE_LIMIT_RPS")
+	t.Setenv("KAITEN_TOKEN", "process-alias")
+	t.Setenv("KAITEN_BASE_URL", "https://process-alias.example")
+	t.Setenv("KAITEN_RATE_LIMIT", "7")
+	cfg, err := Load(true, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Token != "process-alias" || cfg.BaseURL.Host != "process-alias.example" || cfg.RateLimitRPS != 7 {
+		t.Fatalf("process source did not win: %+v", cfg)
+	}
+}
+
+func unsetEnvironment(t *testing.T, name string) {
+	t.Helper()
+	value, existed := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(name, value)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
+}

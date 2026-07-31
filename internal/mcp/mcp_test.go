@@ -347,6 +347,101 @@ func TestRuntimeFlags(t *testing.T) {
 	}
 }
 
+func TestProtocolNegotiationFallsBackFromUnknownVersion(t *testing.T) {
+	if got := negotiateProtocol("2099-01-01"); got != fallbackProtocolVersion {
+		t.Fatalf("unknown protocol negotiated as %q", got)
+	}
+	for _, supported := range []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"} {
+		if got := negotiateProtocol(supported); got != supported {
+			t.Fatalf("supported protocol %s negotiated as %s", supported, got)
+		}
+	}
+}
+
+func TestCustomPropertyResolutionBeforeMutation(t *testing.T) {
+	var mutations atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			mutations.Add(1)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			properties := body["properties"].(map[string]any)
+			if properties["id_11"] != float64(3.5) || properties["id_12"] != float64(21) {
+				t.Errorf("resolved properties mismatch: %#v", properties)
+			}
+			labels := properties["id_13"].([]any)
+			if !reflect.DeepEqual(labels, []any{float64(31), float64(32)}) {
+				t.Errorf("multi-select mismatch: %#v", labels)
+			}
+			_, _ = io.WriteString(w, `{"id":5}`)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/spaces":
+			_, _ = io.WriteString(w, `[{"id":1,"title":"Space"}]`)
+		case "/api/v1/spaces/1/boards":
+			_, _ = io.WriteString(w, `[{"id":2,"title":"Board"}]`)
+		case "/api/v1/boards/2":
+			_, _ = io.WriteString(w, `{"id":2,"columns":[{"id":3,"title":"Ready"}]}`)
+		case "/api/v1/company/custom-properties":
+			_, _ = io.WriteString(w, `[{"id":11,"name":"Effort","type":"number"},{"id":12,"name":"Stage","type":"select","multi_select":false},{"id":13,"name":"Labels","type":"select","multi_select":true}]`)
+		case "/api/v1/company/custom-properties/12/select-values":
+			_, _ = io.WriteString(w, `[{"id":21,"value":"Ready"}]`)
+		case "/api/v1/company/custom-properties/13/select-values":
+			_, _ = io.WriteString(w, `[{"id":31,"value":"One"},{"id":32,"value":"Two"}]`)
+		default:
+			_, _ = io.WriteString(w, `[]`)
+		}
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL)
+	cfg := config.Config{Token: "property-test", BaseURL: base, APIPrefix: "/api/v1", RateLimitRPS: 10000, CacheTTL: time.Minute, MaxConcurrency: 4, Timeout: time.Second, EnableWriteTools: true}
+	server := NewServer(cfg)
+	arguments := map[string]any{
+		"title": "Property card", "board": "2", "column": "3",
+		"properties": map[string]any{"effort": "3.5", "stage": "ready", "labels": "one, two"},
+	}
+	result := server.callTool(context.Background(), writeSpecs[4], arguments)
+	if result.StructuredContent["ok"] != true || mutations.Load() != 1 {
+		t.Fatalf("property mutation failed: %#v mutations=%d", result.StructuredContent, mutations.Load())
+	}
+}
+
+func TestAmbiguousPropertyStopsBeforeMutation(t *testing.T) {
+	var mutations atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/spaces":
+			_, _ = io.WriteString(w, `[{"id":1,"title":"Space"}]`)
+		case "/api/v1/spaces/1/boards":
+			_, _ = io.WriteString(w, `[{"id":2,"title":"Board"}]`)
+		case "/api/v1/boards/2":
+			_, _ = io.WriteString(w, `{"columns":[{"id":3,"title":"Ready"}]}`)
+		case "/api/v1/company/custom-properties":
+			_, _ = io.WriteString(w, `[{"id":11,"name":"Roadmap","type":"string"},{"id":12,"name":"Roadblock","type":"string"}]`)
+		default:
+			_, _ = io.WriteString(w, `{}`)
+		}
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL)
+	cfg := config.Config{Token: "ambiguity-test", BaseURL: base, APIPrefix: "/api/v1", RateLimitRPS: 10000, CacheTTL: time.Minute, MaxConcurrency: 4, Timeout: time.Second, EnableWriteTools: true}
+	server := NewServer(cfg)
+	result := server.callTool(context.Background(), writeSpecs[4], map[string]any{
+		"title": "No mutation", "board": "2", "column": "3", "properties": map[string]any{"road": "value"},
+	})
+	if result.StructuredContent["ok"] != false || mutations.Load() != 0 {
+		t.Fatalf("ambiguous property reached mutation: %#v calls=%d", result.StructuredContent, mutations.Load())
+	}
+}
+
 func TestToolNamesAreUniqueAndSortedWithinModes(t *testing.T) {
 	for _, specs := range [][]toolSpec{readSpecs, writeSpecs} {
 		names := make([]string, len(specs))

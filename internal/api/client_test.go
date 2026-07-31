@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -145,5 +147,67 @@ func TestResolve(t *testing.T) {
 	}
 	if _, err := Resolve("missing", resources, false); err == nil {
 		t.Fatal("expected not-found resolution")
+	}
+}
+
+func TestHTTPFailureClassificationAndInvalidJSON(t *testing.T) {
+	tests := []struct {
+		status int
+		body   string
+		kind   string
+	}{
+		{http.StatusUnauthorized, `{}`, "auth"},
+		{http.StatusForbidden, `{}`, "auth"},
+		{http.StatusNotFound, `{}`, "not_found"},
+		{http.StatusTooManyRequests, `{}`, "rate_limit"},
+		{http.StatusUnprocessableEntity, `{}`, "validation"},
+		{http.StatusBadGateway, `{}`, "upstream"},
+		{http.StatusOK, `{not-json`, "upstream"},
+	}
+	for _, test := range tests {
+		t.Run(strconv.Itoa(test.status)+test.kind, func(t *testing.T) {
+			client, _ := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}), 10000, 1)
+			_, err := client.JSON(context.Background(), http.MethodPost, "/cards", nil, map[string]any{"title": "safe fixture"})
+			var apiError *Error
+			if !errors.As(err, &apiError) || apiError.Type != test.kind {
+				t.Fatalf("status %d classified as %#v", test.status, err)
+			}
+		})
+	}
+}
+
+func TestRetryDelayAndCancellation(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	if delay := retryDelay(http.Header{"Retry-After": {"2"}}, now); delay != 2*time.Second {
+		t.Fatalf("numeric Retry-After: %v", delay)
+	}
+	reset := strconv.FormatInt(now.Add(3*time.Second).Unix(), 10)
+	header := http.Header{}
+	header.Set("X-Kaiten-RateLimit-Reset", reset)
+	if delay := retryDelay(header, now); delay != 3*time.Second {
+		t.Fatalf("reset header: %v", delay)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitContext(ctx, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait did not honor cancellation: %v", err)
+	}
+}
+
+func TestZeroTTLDisablesReuse(t *testing.T) {
+	cache := NewCache(0)
+	var calls atomic.Int32
+	loader := func(context.Context) (any, error) { calls.Add(1); return "fresh", nil }
+	for i := 0; i < 2; i++ {
+		value, cached, err := cache.Get(context.Background(), "key", loader)
+		if err != nil || cached || value != "fresh" {
+			t.Fatalf("unexpected disabled-cache result: %v %t %v", value, cached, err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("zero TTL reused a value: %d", calls.Load())
 	}
 }
