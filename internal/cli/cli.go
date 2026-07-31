@@ -101,7 +101,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return completion(args[1:], stdout, stderr)
 	}
 	if args[0] == "mcp" {
-		return runMCP(ctx, args[1:], stdin, stdout, stderr, dependencies)
+		return runMCPCommand(ctx, args[1:], stdin, stdout, stderr, dependencies, "kaiten mcp")
 	}
 	group := args[0]
 	if !knownGroup(group) {
@@ -516,30 +516,52 @@ func checklistPath(cardID, checklistID int64) string {
 	return fmt.Sprintf("/cards/%d/checklists/%d", cardID, checklistID)
 }
 
-func runMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, dependencies Dependencies) int {
+// RunStandaloneMCP executes the kaiten-mcp entrypoint with injectable
+// lifecycle dependencies. Command help is handled before configuration or any
+// lifecycle callback is reached.
+func RunStandaloneMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, dependencies Dependencies) int {
+	return runMCPCommand(ctx, args, stdin, stdout, stderr, dependencies, "kaiten-mcp")
+}
+
+func runMCPCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, dependencies Dependencies, usagePrefix string) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "version", "--version":
+			if len(args) == 2 && isHelp(args[1]) {
+				printMCPCommandHelp(stdout, usagePrefix, "version")
+				return 0
+			}
+			if len(args) != 1 {
+				return fail(stderr, "%s version accepts no arguments", usagePrefix)
+			}
 			fmt.Fprintf(stdout, "kaiten-mcp %s\n", version.String())
 			return 0
 		case "install":
+			if len(args) == 2 && isHelp(args[1]) {
+				printMCPCommandHelp(stdout, usagePrefix, "install")
+				return 0
+			}
 			if len(args) != 1 {
-				return fail(stderr, "mcp install accepts no arguments")
+				return fail(stderr, "%s install accepts no arguments", usagePrefix)
 			}
 			if dependencies.MCPInstall == nil {
 				return fail(stderr, "installer is unavailable")
 			}
 			return dependencies.MCPInstall(ctx, stdin, stdout, stderr)
 		case "uninstall":
+			if len(args) == 2 && isHelp(args[1]) {
+				printMCPCommandHelp(stdout, usagePrefix, "uninstall")
+				return 0
+			}
 			if len(args) != 1 {
-				return fail(stderr, "mcp uninstall accepts no arguments")
+				return fail(stderr, "%s uninstall accepts no arguments", usagePrefix)
 			}
 			if dependencies.MCPUninstall == nil {
 				return fail(stderr, "uninstaller is unavailable")
 			}
 			return dependencies.MCPUninstall(ctx, stdin, stdout, stderr)
 		case "--help", "-h":
-			printMCPHelp(stdout)
+			printMCPHelp(stdout, usagePrefix)
 			return 0
 		}
 	}
@@ -619,11 +641,16 @@ func printCommandHelp(writer io.Writer, spec commandSpec) {
 	}
 }
 
-func printMCPHelp(writer io.Writer) {
-	fmt.Fprintln(writer, `Usage: kaiten mcp [--transport <stdio|streamable-http>] [--host <bind-host>] [--port <1..65535>] [--streamable-http-path <path>]
-       kaiten mcp install
-       kaiten mcp uninstall
-       kaiten mcp version`)
+func printMCPHelp(writer io.Writer, usagePrefix string) {
+	fmt.Fprintf(writer, `Usage: %s [--transport <stdio|streamable-http>] [--host <bind-host>] [--port <1..65535>] [--streamable-http-path <path>]
+       %s install
+       %s uninstall
+       %s version
+`, usagePrefix, usagePrefix, usagePrefix, usagePrefix)
+}
+
+func printMCPCommandHelp(writer io.Writer, usagePrefix, command string) {
+	fmt.Fprintf(writer, "Usage: %s %s\n", usagePrefix, command)
 }
 
 func knownGroup(group string) bool {
@@ -651,6 +678,10 @@ func containsHelp(args []string) bool {
 		}
 	}
 	return false
+}
+
+func isHelp(arg string) bool {
+	return arg == "--help" || arg == "-h"
 }
 
 func fail(stderr io.Writer, format string, values ...any) int {

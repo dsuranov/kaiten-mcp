@@ -163,6 +163,58 @@ func TestHelpVersionAndCompletionNeedNoCredentials(t *testing.T) {
 	}
 }
 
+func TestMCPSubcommandHelpIsOfflineAndSideEffectFree(t *testing.T) {
+	for _, name := range []string{"KAITEN_API_TOKEN", "KAITEN_TOKEN", "KAITEN_URL", "KAITEN_BASE_URL"} {
+		t.Setenv(name, "")
+	}
+	tests := []struct {
+		name       string
+		standalone bool
+		args       []string
+		want       string
+	}{
+		{name: "embedded install", args: []string{"install", "--help"}, want: "Usage: kaiten mcp install\n"},
+		{name: "embedded uninstall", args: []string{"uninstall", "--help"}, want: "Usage: kaiten mcp uninstall\n"},
+		{name: "embedded version", args: []string{"version", "--help"}, want: "Usage: kaiten mcp version\n"},
+		{name: "standalone install", standalone: true, args: []string{"install", "--help"}, want: "Usage: kaiten-mcp install\n"},
+		{name: "standalone uninstall", standalone: true, args: []string{"uninstall", "--help"}, want: "Usage: kaiten-mcp uninstall\n"},
+		{name: "standalone version", standalone: true, args: []string{"version", "--help"}, want: "Usage: kaiten-mcp version\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var callbacks atomic.Int32
+			dependencies := Dependencies{
+				MCPRun: func(context.Context, []string, io.Reader, io.Writer, io.Writer) int {
+					callbacks.Add(1)
+					return 99
+				},
+				MCPInstall: func(context.Context, io.Reader, io.Writer, io.Writer) int {
+					callbacks.Add(1)
+					return 99
+				},
+				MCPUninstall: func(context.Context, io.Reader, io.Writer, io.Writer) int {
+					callbacks.Add(1)
+					return 99
+				},
+			}
+			var stdout, stderr bytes.Buffer
+			var status int
+			if test.standalone {
+				status = RunStandaloneMCP(context.Background(), test.args, strings.NewReader(""), &stdout, &stderr, dependencies)
+			} else {
+				args := append([]string{"mcp"}, test.args...)
+				status = Run(context.Background(), args, strings.NewReader(""), &stdout, &stderr, dependencies)
+			}
+			if status != 0 || stdout.String() != test.want || stderr.Len() != 0 {
+				t.Fatalf("help mismatch: status=%d out=%q err=%q", status, stdout.String(), stderr.String())
+			}
+			if callbacks.Load() != 0 {
+				t.Fatalf("help invoked %d lifecycle callback(s)", callbacks.Load())
+			}
+		})
+	}
+}
+
 func TestAPIErrorIsConciseAndSecretFree(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
