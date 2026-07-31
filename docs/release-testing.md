@@ -15,6 +15,8 @@ From the frozen candidate:
 
 ```sh
 ./scripts/verify-go-toolchain.sh
+go run ./scripts/verify-workflows.go
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 go mod verify
 go vet ./...
 go test ./...

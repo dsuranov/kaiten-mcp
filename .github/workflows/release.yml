@@ -5,10 +5,7 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 env:
   GOTOOLCHAIN: local
@@ -17,14 +14,16 @@ jobs:
   verify:
     name: Verify release candidate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.5"
           check-latest: false
@@ -32,6 +31,12 @@ jobs:
 
       - name: Verify selected Go toolchain
         run: ./scripts/verify-go-toolchain.sh
+
+      - name: Verify workflow supply-chain policy
+        run: go run ./scripts/verify-workflows.go
+
+      - name: Lint GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 
       - name: Run release checks
         shell: bash
@@ -41,18 +46,20 @@ jobs:
           go test ./...
           go test -race ./...
 
-  release:
-    name: Build draft release
+  build:
+    name: Build and verify release assets
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Check out source and tags
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.5"
           check-latest: false
@@ -69,18 +76,16 @@ jobs:
           "$RUNNER_TEMP/security-tools/govulncheck" -version
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           syft-version: v1.50.0
 
       - name: Build archives, checksums, and SBOMs
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
           version: v2.17.1
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          args: release --clean --skip=publish
 
       - name: Validate release evidence
         shell: bash
@@ -129,7 +134,69 @@ jobs:
           test "${#packaged_binaries[@]}" -eq 15
           ./scripts/verify-go-binaries.sh "${packaged_binaries[@]}"
 
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-assets
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sbom.json
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    name: Attest checksum manifest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-assets
+          path: dist
+
       - name: Attest checksum manifest
-        uses: actions/attest@v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-checksums: ./dist/checksums.txt
+
+  publish:
+    name: Create draft release
+    needs:
+      - build
+      - attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Create draft with verified assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          assets=()
+          while IFS= read -r -d '' asset; do
+            assets+=("$asset")
+          done < <(
+            find dist -maxdepth 1 -type f \
+              \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sbom.json' -o -name checksums.txt \) \
+              -print0
+          )
+          test "${#assets[@]}" -eq 21
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --generate-notes

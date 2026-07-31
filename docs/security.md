@@ -89,6 +89,13 @@ binary-mode vulnerability scans on the exact executable bytes extracted from
 the final archives. `go version -m` must identify Go 1.26.5 for every scanned
 binary; a source-only vulnerability scan is not sufficient evidence.
 
+Every external GitHub Action is pinned to a full immutable commit SHA with its
+human-readable major version retained in a comment. Verification and build
+jobs are read-only; attestation and draft publication use separate jobs with
+only their required write scopes. A repository policy check and pinned
+actionlint run validate these rules, while weekly Dependabot updates propose
+reviewable action-pin changes.
+
 ## Reporting a vulnerability
 
 Use the repository's private security-advisory channel when available. Include
