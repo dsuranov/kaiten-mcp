@@ -38,6 +38,7 @@ type Client struct {
 	semaphore  chan struct{}
 	rate       *rateGate
 	cache      *Cache
+	timeout    time.Duration
 }
 
 // New returns a client configured with bounded concurrency, rate limiting,
@@ -55,6 +56,7 @@ func NewWithHTTPClient(cfg config.Config, client *http.Client) *Client {
 		baseURL: cfg.BaseURL, prefix: cfg.APIPrefix, token: cfg.Token,
 		httpClient: client, semaphore: make(chan struct{}, cfg.MaxConcurrency),
 		rate: newRateGate(cfg.RateLimitRPS), cache: NewCache(cfg.CacheTTL),
+		timeout: cfg.Timeout,
 	}
 }
 
@@ -109,6 +111,12 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if err := c.rate.Wait(ctx); err != nil {
 		return nil, 0, false, sanitizedContextError(err)
 	}
+	requestContext := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		requestContext, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
 	u := *c.baseURL
 	u.Path = strings.TrimRight(c.baseURL.Path, "/") + c.prefix + "/" + strings.TrimLeft(path, "/")
 	u.RawQuery = query.Encode()
@@ -116,7 +124,7 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if hasBody {
 		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
+	req, err := http.NewRequestWithContext(requestContext, method, u.String(), reader)
 	if err != nil {
 		return nil, 0, false, &Error{Type: "validation", Message: "could not construct Kaiten request"}
 	}
@@ -127,8 +135,8 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, 0, false, sanitizedContextError(ctx.Err())
+		if requestContext.Err() != nil {
+			return nil, 0, false, sanitizedContextError(requestContext.Err())
 		}
 		return nil, 0, true, &Error{Type: "upstream", Message: "Kaiten request failed before a response was received"}
 	}
