@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -33,10 +32,11 @@ import (
 )
 
 const (
-	maxArtifactBytes = int64(2 << 30)
-	maxArchiveBytes  = int64(1 << 30)
-	maxArchiveFiles  = 512
-	expectedGo       = "go1.26.5"
+	maxArtifactBytes  = int64(2 << 30)
+	maxArchiveBytes   = int64(1 << 30)
+	maxTarStreamBytes = maxArchiveBytes + 16<<20
+	maxArchiveFiles   = 512
+	expectedGo        = "go1.26.5"
 )
 
 var (
@@ -234,9 +234,13 @@ func prepare(ctx context.Context, opts options) (releaseBinding, error) {
 	}
 	zipPath := filepath.Join(opts.WorkDir, "release-assets.zip")
 	downloadEndpoint := repositoryEndpoint(base, opts.Repository, "actions/artifacts/"+strconv.FormatInt(selected.ID, 10)+"/zip")
-	result.ArtifactZIPHash, err = downloadFile(ctx, client, downloadEndpoint, opts.Token, zipPath)
+	var downloadedBytes int64
+	result.ArtifactZIPHash, downloadedBytes, err = downloadFile(ctx, client, downloadEndpoint, opts.Token, zipPath)
 	if err != nil {
 		return result, fmt.Errorf("download release-assets: %w", err)
+	}
+	if downloadedBytes != selected.SizeInBytes {
+		return result, fmt.Errorf("release-assets downloaded size = %d, API attested %d", downloadedBytes, selected.SizeInBytes)
 	}
 	wantArtifactHash := strings.TrimPrefix(selected.Digest, "sha256:")
 	if result.ArtifactZIPHash != wantArtifactHash {
@@ -271,16 +275,13 @@ func prepare(ctx context.Context, opts options) (releaseBinding, error) {
 	result.KaitenMCPName = "kaiten-mcp" + extension
 	kaiten := filepath.Join(extractDir, archiveRoot, result.KaitenName)
 	kaitenMCP := filepath.Join(extractDir, archiveRoot, result.KaitenMCPName)
-	for _, binary := range []string{kaiten, kaitenMCP} {
-		if err := validateBinary(binary, runtime.GOOS, runtime.GOARCH, expectedGo); err != nil {
+	for _, binary := range []struct{ path, main string }{
+		{path: kaiten, main: "github.com/dsuranov/kaiten-mcp/cmd/kaiten"},
+		{path: kaitenMCP, main: "github.com/dsuranov/kaiten-mcp/cmd/kaiten-mcp"},
+	} {
+		if err := validateBinary(binary.path, binary.main, runtime.GOOS, runtime.GOARCH, expectedGo, opts.ExpectedSHA); err != nil {
 			return result, err
 		}
-	}
-	if err := smokeVersion(ctx, kaiten, []string{"version"}, "kaiten "+version); err != nil {
-		return result, err
-	}
-	if err := smokeVersion(ctx, kaitenMCP, []string{"version"}, "kaiten-mcp "+version); err != nil {
-		return result, err
 	}
 	result.KaitenHash, err = fileSHA256(kaiten)
 	if err != nil {
@@ -289,6 +290,9 @@ func prepare(ctx context.Context, opts options) (releaseBinding, error) {
 	result.KaitenMCPHash, err = fileSHA256(kaitenMCP)
 	if err != nil {
 		return result, err
+	}
+	if result.KaitenHash == result.KaitenMCPHash {
+		return result, errors.New("release archive contains identical kaiten and kaiten-mcp binaries")
 	}
 	result.GOOS, result.GOARCH, result.GoVersion = runtime.GOOS, runtime.GOARCH, expectedGo
 	if err := makeNewDirectory(opts.OutputDir); err != nil {
@@ -341,12 +345,17 @@ func githubClient() *http.Client {
 			if len(via) >= 10 {
 				return errors.New("too many artifact download redirects")
 			}
-			if request.URL.Scheme != "https" && !(request.URL.Scheme == "http" && (request.URL.Hostname() == "127.0.0.1" || request.URL.Hostname() == "localhost" || request.URL.Hostname() == "::1")) {
+			loopbackHTTP := request.URL.Scheme == "http" && (request.URL.Hostname() == "127.0.0.1" || request.URL.Hostname() == "localhost" || request.URL.Hostname() == "::1")
+			initialLoopbackHTTP := len(via) > 0 && via[0].URL.Scheme == "http" && (via[0].URL.Hostname() == "127.0.0.1" || via[0].URL.Hostname() == "localhost" || via[0].URL.Hostname() == "::1")
+			if request.URL.Scheme != "https" && !(loopbackHTTP && initialLoopbackHTTP) {
 				return errors.New("artifact download redirected away from HTTPS")
 			}
 			if len(via) > 0 && !sameOrigin(request.URL, via[0].URL) {
 				request.Header.Del("Authorization")
 			}
+			// net/http may synthesize Referer from the immediately previous
+			// signed download URL. Never forward that URL to another hop.
+			request.Header.Del("Referer")
 			return nil
 		},
 	}
@@ -412,8 +421,8 @@ func validateRun(run workflowRun, opts options) error {
 	if !releaseTag.MatchString(run.HeadBranch) {
 		return fmt.Errorf("Release run ref %q is not a reviewed v-prefixed release tag", run.HeadBranch)
 	}
-	if run.RunAttempt < 1 {
-		return errors.New("Release run attempt is missing")
+	if run.RunAttempt != 1 {
+		return fmt.Errorf("Release run attempt = %d, want first attempt exactly; artifact records do not attest rerun attempts", run.RunAttempt)
 	}
 	return nil
 }
@@ -488,37 +497,37 @@ func findReleaseArtifact(ctx context.Context, client *http.Client, base *url.URL
 	return selected, nil
 }
 
-func downloadFile(ctx context.Context, client *http.Client, endpoint, token, destination string) (string, error) {
+func downloadFile(ctx context.Context, client *http.Client, endpoint, token, destination string) (string, int64, error) {
 	request, err := apiRequest(ctx, endpoint, token)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", errors.New("artifact HTTP request failed")
+		return "", 0, errors.New("artifact HTTP request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return "", fmt.Errorf("artifact download returned HTTP %d", response.StatusCode)
+		return "", 0, fmt.Errorf("artifact download returned HTTP %d", response.StatusCode)
 	}
 	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	digest := sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(file, digest), io.LimitReader(response.Body, maxArtifactBytes+1))
 	closeErr := file.Close()
 	if copyErr != nil {
-		return "", copyErr
+		return "", 0, copyErr
 	}
 	if closeErr != nil {
-		return "", closeErr
+		return "", 0, closeErr
 	}
 	if written < 1 || written > maxArtifactBytes {
-		return "", errors.New("artifact download exceeded the accepted size")
+		return "", 0, errors.New("artifact download exceeded the accepted size")
 	}
-	return hex.EncodeToString(digest.Sum(nil)), nil
+	return hex.EncodeToString(digest.Sum(nil)), written, nil
 }
 
 func extractArtifactZIP(archive, destination string) error {
@@ -701,6 +710,13 @@ func extractReleaseZIP(archivePath, destination, expectedRoot string) error {
 }
 
 func extractReleaseTarGZ(archivePath, destination, expectedRoot string) error {
+	return extractReleaseTarGZWithLimit(archivePath, destination, expectedRoot, maxTarStreamBytes)
+}
+
+func extractReleaseTarGZWithLimit(archivePath, destination, expectedRoot string, streamLimit int64) error {
+	if streamLimit < 1 || streamLimit == int64(^uint64(0)>>1) {
+		return errors.New("invalid platform tarball stream limit")
+	}
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -711,7 +727,8 @@ func extractReleaseTarGZ(archivePath, destination, expectedRoot string) error {
 		return err
 	}
 	defer gzipReader.Close()
-	reader := tar.NewReader(gzipReader)
+	limitedStream := &io.LimitedReader{R: gzipReader, N: streamLimit + 1}
+	reader := tar.NewReader(limitedStream)
 	seen := make(map[string]bool)
 	count := 0
 	var total int64
@@ -721,6 +738,9 @@ func extractReleaseTarGZ(archivePath, destination, expectedRoot string) error {
 			break
 		}
 		if err != nil {
+			if limitedStream.N == 0 {
+				return errors.New("platform tarball exceeds the accepted decompressed stream size")
+			}
 			return err
 		}
 		count++
@@ -766,6 +786,9 @@ func extractReleaseTarGZ(archivePath, destination, expectedRoot string) error {
 	}
 	if count == 0 {
 		return errors.New("platform tarball is empty")
+	}
+	if limitedStream.N == 0 {
+		return errors.New("platform tarball exceeds the accepted decompressed stream size")
 	}
 	return nil
 }
@@ -846,7 +869,7 @@ func portableArchivePath(name string) bool {
 	return true
 }
 
-func validateBinary(binary, goos, goarch, goVersion string) error {
+func validateBinary(binary, mainPath, goos, goarch, goVersion, expectedSHA string) error {
 	info, err := os.Lstat(binary)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("release binary is missing or unsafe: %s", filepath.Base(binary))
@@ -858,30 +881,18 @@ func validateBinary(binary, goos, goarch, goVersion string) error {
 	if err != nil {
 		return fmt.Errorf("read build info for %s: %w", filepath.Base(binary), err)
 	}
+	if build.Path != mainPath || build.Main.Path != "github.com/dsuranov/kaiten-mcp" || build.Main.Replace != nil {
+		return fmt.Errorf("%s main identity = %s module %s, want %s from the canonical module", filepath.Base(binary), build.Path, build.Main.Path, mainPath)
+	}
 	settings := make(map[string]string)
 	for _, setting := range build.Settings {
+		if _, duplicate := settings[setting.Key]; duplicate {
+			return fmt.Errorf("%s build identity repeats setting %s", filepath.Base(binary), setting.Key)
+		}
 		settings[setting.Key] = setting.Value
 	}
-	if build.GoVersion != goVersion || settings["GOOS"] != goos || settings["GOARCH"] != goarch {
+	if build.GoVersion != goVersion || settings["GOOS"] != goos || settings["GOARCH"] != goarch || settings["CGO_ENABLED"] != "0" || settings["-buildmode"] != "exe" || settings["-compiler"] != "gc" || settings["-trimpath"] != "true" || settings["vcs"] != "git" || settings["vcs.revision"] != expectedSHA || settings["vcs.modified"] != "false" {
 		return fmt.Errorf("%s build identity = %s %s/%s, want %s %s/%s", filepath.Base(binary), build.GoVersion, settings["GOOS"], settings["GOARCH"], goVersion, goos, goarch)
-	}
-	return nil
-}
-
-func smokeVersion(parent context.Context, binary string, arguments []string, expected string) error {
-	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, binary, arguments...)
-	// The downloaded binaries need no environment for a version smoke. In
-	// particular, never expose the Actions token used for the artifact fetch.
-	command.Env = []string{}
-	var stdout, stderr strings.Builder
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("smoke %s version: %w", filepath.Base(binary), err)
-	}
-	if strings.TrimSpace(stdout.String()) != expected || stderr.String() != "" {
-		return fmt.Errorf("%s version output = stdout %q stderr %q, want %q and empty stderr", filepath.Base(binary), strings.TrimSpace(stdout.String()), stderr.String(), expected)
 	}
 	return nil
 }

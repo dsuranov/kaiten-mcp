@@ -6,6 +6,16 @@ native_uid="${2:?usage: cleanup-native-lifecycle-linux.sh <user> <uid> <stage> <
 stage="${3:?usage: cleanup-native-lifecycle-linux.sh <user> <uid> <stage> <evidence-directory>}"
 evidence="${4:?usage: cleanup-native-lifecycle-linux.sh <user> <uid> <stage> <evidence-directory>}"
 
+if [[ ! -d "$evidence" || -L "$evidence" ]]; then
+  echo "evidence destination is unavailable or symbolic" >&2
+  exit 1
+fi
+canonical_evidence="$(realpath "$evidence")"
+if [[ "$canonical_evidence" != "$evidence" ]]; then
+  echo "evidence destination is not an exact canonical path" >&2
+  exit 1
+fi
+
 target_validated=false
 user_manager_stopped=false
 linger_disabled=false
@@ -21,7 +31,7 @@ evidence_uid=0
 write_evidence() {
   local result="failed"
   [[ "$failed" == false ]] && result="passed"
-  local temporary="$evidence/.linux-wrapper-cleanup.$$.tmp"
+  local temporary="$canonical_evidence/.linux-wrapper-cleanup.$$.tmp"
   {
     printf '{\n'
     printf '  "schema": "kaiten-linux-wrapper-cleanup/v1",\n'
@@ -40,7 +50,7 @@ write_evidence() {
     printf '}\n'
   } >"$temporary"
   chmod 0600 "$temporary"
-  mv -f -- "$temporary" "$evidence/linux-wrapper-cleanup.json"
+  mv -f -- "$temporary" "$canonical_evidence/linux-wrapper-cleanup.json"
 }
 
 finish() {
@@ -80,10 +90,6 @@ fi
 canonical_stage="$(realpath "$stage")"
 if [[ "$canonical_stage" != "$expected_stage" || "$(dirname "$canonical_stage")" != "/tmp" ]]; then
   echo "Linux cleanup stage did not resolve to the exact /tmp child" >&2
-  exit 1
-fi
-if [[ ! -d "$evidence" || -L "$evidence" ]]; then
-  echo "evidence destination is unavailable or symbolic" >&2
   exit 1
 fi
 target_validated=true
@@ -155,7 +161,21 @@ if [[ "$login_state_absent" != true ]]; then
   failed=true
 fi
 
-if [[ "$user_manager_stopped" == true && "$processes_absent" == true && "$user_deleted" == true ]]; then
+sudo pgrep -u "$native_uid" >/dev/null 2>&1
+process_status=$?
+if [[ "$process_status" -ne 1 ]]; then
+  processes_absent=false
+  failed=true
+fi
+
+listeners="$(sudo ss -H -ltn 'sport = :8100' 2>/dev/null)"
+listener_status=$?
+if [[ "$listener_status" -ne 0 || -n "$listeners" ]]; then
+  port_8100_free=false
+  failed=true
+fi
+
+if [[ "$user_manager_stopped" == true && "$linger_disabled" == true && "$processes_absent" == true && "$port_8100_free" == true && "$user_deleted" == true && "$group_deleted" == true && "$login_state_absent" == true ]]; then
   sudo rm -rf -- "$canonical_stage"
   if [[ ! -e "$canonical_stage" ]]; then
     stage_deleted=true
@@ -164,13 +184,6 @@ if [[ "$user_manager_stopped" == true && "$processes_absent" == true && "$user_d
   fi
 else
   echo "preserving exact stage because privileged state is not proven quiescent" >&2
-  failed=true
-fi
-
-listeners="$(sudo ss -H -ltn 'sport = :8100' 2>/dev/null)"
-listener_status=$?
-if [[ "$listener_status" -ne 0 || -n "$listeners" ]]; then
-  port_8100_free=false
   failed=true
 fi
 

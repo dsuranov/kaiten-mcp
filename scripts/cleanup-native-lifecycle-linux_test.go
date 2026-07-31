@@ -33,6 +33,10 @@ func TestLinuxCleanupRejectsUnreviewedTargetWithoutMutatingSource(t *testing.T) 
 	if err := os.Mkdir(evidence, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	evidence, err = filepath.EvalSymlinks(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stage := filepath.Join(temporary, "unreviewed-stage")
 	if err := os.Mkdir(stage, 0o700); err != nil {
 		t.Fatal(err)

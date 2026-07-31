@@ -29,11 +29,10 @@ const testReleaseVersion = "1.2.3-rc.1"
 func TestPrepareBindsAndExtractsExactReleaseBytes(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	program := buildVersionFixture(t, root)
-	archiveName, archiveBytes := buildFullArchive(t, program)
+	kaitenFixture, kaitenMCPFixture, expectedSHA := buildReleaseFixtures(t, root)
+	archiveName, archiveBytes := buildFullArchive(t, kaitenFixture, kaitenMCPFixture)
 	assetsZIP, manifestHash, archiveHash := buildArtifactZIP(t, archiveName, archiveBytes)
 	artifactHash := sha256Hex(assetsZIP)
-	expectedSHA := strings.Repeat("a", 40)
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer test-token" {
@@ -46,7 +45,7 @@ func TestPrepareBindsAndExtractsExactReleaseBytes(t *testing.T) {
 		case "/repos/acme/kaiten-mcp/actions/runs/42":
 			writeTestJSON(t, writer, workflowRun{
 				ID: 42, Name: "Release", Path: ".github/workflows/release.yml", Event: "push", Status: "completed", Conclusion: "success",
-				HeadBranch: "v" + testReleaseVersion, HeadSHA: expectedSHA, RunAttempt: 2,
+				HeadBranch: "v" + testReleaseVersion, HeadSHA: expectedSHA, RunAttempt: 1,
 				Repository: repositoryIdentity{ID: 7, FullName: "acme/kaiten-mcp"}, HeadRepo: repositoryIdentity{ID: 7, FullName: "acme/kaiten-mcp"},
 			})
 		case "/repos/acme/kaiten-mcp/git/ref/tags/v" + testReleaseVersion:
@@ -90,12 +89,12 @@ func TestPrepareBindsAndExtractsExactReleaseBytes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		extension = ".exe"
 	}
-	for _, name := range []string{"kaiten" + extension, "kaiten-mcp" + extension} {
+	for name, source := range map[string]string{"kaiten" + extension: kaitenFixture, "kaiten-mcp" + extension: kaitenMCPFixture} {
 		got, err := os.ReadFile(filepath.Join(opts.OutputDir, name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		want, err := os.ReadFile(program)
+		want, err := os.ReadFile(source)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -155,6 +154,7 @@ func TestValidateRunFailsClosed(t *testing.T) {
 		"conclusion":      func(run *workflowRun) { run.Conclusion = "failure" },
 		"head SHA":        func(run *workflowRun) { run.HeadSHA = strings.Repeat("b", 40) },
 		"ref":             func(run *workflowRun) { run.HeadBranch = "main" },
+		"rerun attempt":   func(run *workflowRun) { run.RunAttempt = 2 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -184,6 +184,54 @@ func TestArchivePathsRejectTraversalLinksAndCaseCollisions(t *testing.T) {
 	writeLinkArchive(t, archivePath, archiveName)
 	if err := extractReleaseArchive(archivePath, archiveName, filepath.Join(root, "extract")); err == nil || !strings.Contains(err.Error(), "link or irregular") {
 		t.Fatalf("link archive error = %v", err)
+	}
+}
+
+func TestTarStreamLimitCountsHiddenLocalPAXRecords(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the production Windows archive format is ZIP")
+	}
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "pax.tar.gz")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for index := 0; index < 3; index++ {
+		contents := []byte("x")
+		header := &tar.Header{
+			Name:       fmt.Sprintf("release-root/file-%d", index),
+			Mode:       0o600,
+			Size:       int64(len(contents)),
+			Format:     tar.FormatPAX,
+			PAXRecords: map[string]string{"comment": strings.Repeat("p", 2048)},
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "extract")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err = extractReleaseTarGZWithLimit(archivePath, destination, "release-root", 1024)
+	if err == nil || !strings.Contains(err.Error(), "decompressed stream size") {
+		t.Fatalf("hidden PAX stream limit error = %v", err)
 	}
 }
 
@@ -250,61 +298,113 @@ func TestSelectPlatformArchiveRequiresFullArchiveAndExactTag(t *testing.T) {
 
 func TestArtifactRedirectDoesNotForwardTokenCrossOrigin(t *testing.T) {
 	t.Parallel()
-	redirectedAuthorization := make(chan string, 1)
-	download := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		redirectedAuthorization <- request.Header.Get("Authorization")
+	type observedHeaders struct{ authorization, referer string }
+	finalHeaders := make(chan observedHeaders, 1)
+	final := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		finalHeaders <- observedHeaders{authorization: request.Header.Get("Authorization"), referer: request.Header.Get("Referer")}
 		_, _ = io.WriteString(writer, "artifact")
 	}))
-	defer download.Close()
+	defer final.Close()
+	signedHeaders := make(chan observedHeaders, 1)
+	signed := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		signedHeaders <- observedHeaders{authorization: request.Header.Get("Authorization"), referer: request.Header.Get("Referer")}
+		http.Redirect(writer, request, final.URL+"/artifact", http.StatusFound)
+	}))
+	defer signed.Close()
 	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("initial Authorization = %q", request.Header.Get("Authorization"))
 		}
-		http.Redirect(writer, request, download.URL+"/signed", http.StatusFound)
+		http.Redirect(writer, request, signed.URL+"/signed?signature=must-not-leak", http.StatusFound)
 	}))
 	defer api.Close()
 	destination := filepath.Join(t.TempDir(), "artifact.zip")
-	if _, err := downloadFile(context.Background(), githubClient(), api.URL, "test-token", destination); err != nil {
+	if _, _, err := downloadFile(context.Background(), githubClient(), api.URL, "test-token", destination); err != nil {
 		t.Fatal(err)
 	}
-	if value := <-redirectedAuthorization; value != "" {
-		t.Fatalf("token was forwarded to artifact host: %q", value)
+	for name, headers := range map[string]observedHeaders{"signed artifact host": <-signedHeaders, "second redirect origin": <-finalHeaders} {
+		if headers.authorization != "" || headers.referer != "" {
+			t.Fatalf("%s received sensitive redirect headers: %+v", name, headers)
+		}
 	}
 }
 
-func buildVersionFixture(t *testing.T, root string) string {
-	t.Helper()
-	source := filepath.Join(root, "version-fixture.go")
-	code := `package main
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-)
-func main() {
-	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
-	if len(os.Args) != 2 || os.Args[1] != "version" { os.Exit(2) }
-	fmt.Printf("%s ` + testReleaseVersion + `\n", name)
-}
-`
-	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+func TestHTTPSArtifactRedirectCannotReachRunnerLoopbackHTTP(t *testing.T) {
+	t.Parallel()
+	client := githubClient()
+	initial, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/acme/kaiten/actions/artifacts/1/zip", nil)
+	if err != nil {
 		t.Fatal(err)
+	}
+	redirect, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8100/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CheckRedirect(redirect, []*http.Request{initial}); err == nil {
+		t.Fatal("HTTPS artifact redirect was allowed to reach runner loopback HTTP")
+	}
+}
+
+func buildReleaseFixtures(t *testing.T, root string) (string, string, string) {
+	t.Helper()
+	repository := filepath.Join(root, "fixture-repository")
+	for _, directory := range []string{filepath.Join(repository, "cmd", "kaiten"), filepath.Join(repository, "cmd", "kaiten-mcp")} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repository, "go.mod"), []byte("module github.com/dsuranov/kaiten-mcp\n\ngo 1.26.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The binding helper must never execute downloaded artifact code in its
+	// token-bearing process. A helper regression that restores a smoke launch
+	// will make this fixture exit non-zero and fail the test.
+	code := `package main
+import "os"
+func main() { os.Exit(99) }
+`
+	for _, source := range []string{filepath.Join(repository, "cmd", "kaiten", "main.go"), filepath.Join(repository, "cmd", "kaiten-mcp", "main.go")} {
+		if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, arguments := range [][]string{{"init", "--quiet"}, {"config", "user.email", "native@example.invalid"}, {"config", "user.name", "Native Fixture"}, {"add", "go.mod", "cmd"}, {"commit", "--quiet", "-m", "fixture"}} {
+		runFixtureCommand(t, repository, "git", arguments...)
+	}
+	commit := strings.TrimSpace(runFixtureCommand(t, repository, "git", "rev-parse", "HEAD"))
+	if !lowerSHA.MatchString(commit) {
+		t.Fatalf("fixture commit is invalid: %q", commit)
 	}
 	extension := ""
 	if runtime.GOOS == "windows" {
 		extension = ".exe"
 	}
-	program := filepath.Join(root, "version-fixture"+extension)
-	command := exec.Command("go", "build", "-trimpath", "-o", program, source)
-	command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "CGO_ENABLED=0")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build version fixture: %v\n%s", err, output)
+	kaiten := filepath.Join(root, "kaiten"+extension)
+	kaitenMCP := filepath.Join(root, "kaiten-mcp"+extension)
+	for output, packagePath := range map[string]string{kaiten: "./cmd/kaiten", kaitenMCP: "./cmd/kaiten-mcp"} {
+		command := exec.Command("go", "build", "-trimpath", "-o", output, packagePath)
+		command.Dir = repository
+		command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+		if buildOutput, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("build release fixture %s: %v\n%s", packagePath, err, buildOutput)
+		}
 	}
-	return program
+	return kaiten, kaitenMCP, commit
 }
 
-func buildFullArchive(t *testing.T, program string) (string, []byte) {
+func runFixtureCommand(t *testing.T, directory, name string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command(name, arguments...)
+	command.Dir = directory
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run fixture command %s: %v\n%s", name, err, output)
+	}
+	return string(output)
+}
+
+func buildFullArchive(t *testing.T, kaiten, kaitenMCP string) (string, []byte) {
 	t.Helper()
 	name := platformArchiveName(testReleaseVersion)
 	root := strings.TrimSuffix(strings.TrimSuffix(name, ".gz"), ".tar")
@@ -313,13 +413,17 @@ func buildFullArchive(t *testing.T, program string) (string, []byte) {
 	if runtime.GOOS == "windows" {
 		extension = ".exe"
 	}
-	programBytes, err := os.ReadFile(program)
+	kaitenBytes, err := os.ReadFile(kaiten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kaitenMCPBytes, err := os.ReadFile(kaitenMCP)
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{
-		root + "/kaiten" + extension:     programBytes,
-		root + "/kaiten-mcp" + extension: programBytes,
+		root + "/kaiten" + extension:     kaitenBytes,
+		root + "/kaiten-mcp" + extension: kaitenMCPBytes,
 		root + "/README.md":              []byte("test release\n"),
 	}
 	var buffer bytes.Buffer

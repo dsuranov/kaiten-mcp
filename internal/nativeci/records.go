@@ -31,6 +31,7 @@ type binarySmokeEvidence struct {
 type architectureSmokeEvidence struct {
 	Schema                string                `json:"schema"`
 	ReleaseRunID          string                `json:"release_run_id"`
+	ReleaseRunAttempt     string                `json:"release_run_attempt"`
 	ReleaseTag            string                `json:"release_tag"`
 	ReleaseHeadSHA        string                `json:"release_head_sha"`
 	ReleaseManifestSHA256 string                `json:"release_manifest_sha256"`

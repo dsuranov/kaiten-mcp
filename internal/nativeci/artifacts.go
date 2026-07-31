@@ -1,6 +1,7 @@
 package nativeci
 
 import (
+	"bytes"
 	"context"
 	"debug/buildinfo"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -165,53 +167,115 @@ func (h *harness) captureFinalManagerStatus(ctx context.Context) error {
 
 func (h *harness) captureReleaseBinaries(ctx context.Context) error {
 	type candidate struct {
-		name, path, prefix string
+		name, path, prefix, expectedHash string
+		goVersion, goos, goarch          string
 	}
 	candidates := []candidate{
-		{name: "kaiten", path: h.config.ReleaseKaiten, prefix: "kaiten "},
-		{name: "kaiten-mcp", path: h.config.V2, prefix: "kaiten-mcp "},
+		{name: "kaiten", path: h.config.ReleaseKaiten, prefix: "kaiten ", expectedHash: h.config.ReleaseKaitenSHA256},
+		{name: "kaiten-mcp", path: h.config.V2, prefix: "kaiten-mcp ", expectedHash: h.config.ReleaseKaitenMCPSHA256},
 	}
 	proof := architectureSmokeEvidence{
-		Schema: "kaiten-native-release-binaries/v1", ReleaseRunID: h.config.ReleaseRunID,
+		Schema: "kaiten-native-release-binaries/v1", ReleaseRunID: h.config.ReleaseRunID, ReleaseRunAttempt: h.config.ReleaseRunAttempt,
 		ReleaseTag: h.config.ReleaseTag, ReleaseHeadSHA: h.config.ReleaseHeadSHA,
 		ReleaseManifestSHA256: h.config.ReleaseManifestSHA256, ReleaseArchive: h.config.ReleaseArchive,
 		ReleaseArchiveSHA256: h.config.ReleaseArchiveSHA256, ReleaseArtifactName: "release-assets",
 	}
-	for _, candidate := range candidates {
-		captured, err := runCaptured(ctx, candidate.path, []string{"version"}, "", filepath.Dir(candidate.path), os.Environ())
+	for index := range candidates {
+		candidate := &candidates[index]
+		_, err := exactReleaseFileHash(candidate.path, candidate.expectedHash)
 		if err != nil {
-			return fmt.Errorf("launch shipped %s: %w", candidate.name, err)
-		}
-		wantOutput := candidate.prefix + h.config.V2Version
-		if captured.exitCode != 0 || strings.TrimSpace(captured.stdout) != wantOutput || captured.stderr != "" {
-			return fmt.Errorf("shipped %s version output = %q, want %q", candidate.name, strings.TrimSpace(captured.stdout), wantOutput)
+			return fmt.Errorf("validate shipped %s: %w", candidate.name, err)
 		}
 		info, err := buildinfo.ReadFile(candidate.path)
 		if err != nil {
 			return fmt.Errorf("read shipped %s build identity: %w", candidate.name, err)
 		}
-		goos, goarch := "", ""
 		for _, setting := range info.Settings {
 			switch setting.Key {
 			case "GOOS":
-				goos = setting.Value
+				candidate.goos = setting.Value
 			case "GOARCH":
-				goarch = setting.Value
+				candidate.goarch = setting.Value
 			}
 		}
-		if info.GoVersion != "go1.26.5" || goos != runtime.GOOS || goarch != runtime.GOARCH {
-			return fmt.Errorf("shipped %s build identity = %s %s/%s, want go1.26.5 %s/%s", candidate.name, info.GoVersion, goos, goarch, runtime.GOOS, runtime.GOARCH)
+		candidate.goVersion = info.GoVersion
+		if candidate.goVersion != "go1.26.5" || candidate.goos != runtime.GOOS || candidate.goarch != runtime.GOARCH {
+			return fmt.Errorf("shipped %s build identity = %s %s/%s, want go1.26.5 %s/%s", candidate.name, candidate.goVersion, candidate.goos, candidate.goarch, runtime.GOOS, runtime.GOARCH)
 		}
-		digest, err := fileSHA256(candidate.path)
+	}
+	for _, candidate := range candidates {
+		stdout, stderr, err := runBoundedReleaseVersion(ctx, candidate.path)
 		if err != nil {
-			return err
+			return fmt.Errorf("launch shipped %s: %w", candidate.name, err)
+		}
+		wantOutput := candidate.prefix + h.config.V2Version
+		if strings.TrimSpace(stdout) != wantOutput || stderr != "" {
+			return fmt.Errorf("shipped %s version output = %q, want %q", candidate.name, strings.TrimSpace(stdout), wantOutput)
+		}
+		for _, immutable := range candidates {
+			if _, hashErr := exactReleaseFileHash(immutable.path, immutable.expectedHash); hashErr != nil {
+				return fmt.Errorf("release binary changed during %s smoke: %s", candidate.name, immutable.name)
+			}
 		}
 		proof.Binaries = append(proof.Binaries, binarySmokeEvidence{
-			Name: candidate.name, SHA256: digest, VersionOutput: wantOutput, GoVersion: info.GoVersion,
-			GOOS: goos, GOARCH: goarch, Launched: true, ExitCode: captured.exitCode,
+			Name: candidate.name, SHA256: candidate.expectedHash, VersionOutput: wantOutput, GoVersion: candidate.goVersion,
+			GOOS: candidate.goos, GOARCH: candidate.goarch, Launched: true, ExitCode: 0,
 		})
 	}
 	return h.writeJSONArtifact("release-binaries.json", proof)
+}
+
+func exactReleaseFileHash(path, expected string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", errors.New("release binary is not a regular non-symbolic file")
+	}
+	digest, err := fileSHA256(path)
+	if err != nil {
+		return "", err
+	}
+	if digest != expected {
+		return "", fmt.Errorf("SHA-256 = %s, want archive-derived %s", digest, expected)
+	}
+	return digest, nil
+}
+
+type boundedReleaseOutput struct {
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (output *boundedReleaseOutput) Write(value []byte) (int, error) {
+	remaining := output.limit - output.buffer.Len()
+	if remaining > len(value) {
+		remaining = len(value)
+	}
+	if remaining > 0 {
+		_, _ = output.buffer.Write(value[:remaining])
+	}
+	if remaining < len(value) {
+		output.exceeded = true
+	}
+	return len(value), nil
+}
+
+func runBoundedReleaseVersion(parent context.Context, binary string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "version")
+	command.Dir = filepath.Dir(binary)
+	command.Env = []string{}
+	stdout := boundedReleaseOutput{limit: 4096}
+	stderr := boundedReleaseOutput{limit: 4096}
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		return stdout.buffer.String(), stderr.buffer.String(), err
+	}
+	if stdout.exceeded || stderr.exceeded {
+		return stdout.buffer.String(), stderr.buffer.String(), errors.New("release version output exceeded 4096 bytes")
+	}
+	return stdout.buffer.String(), stderr.buffer.String(), nil
 }
 
 func (h *harness) captureMCPProof(ctx context.Context, artifact, stage, expectedVersion string) error {

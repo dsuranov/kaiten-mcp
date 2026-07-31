@@ -42,9 +42,10 @@ func TestInitializationFailureRetainsStructuredEvidence(t *testing.T) {
 		V3: makeCandidate("v3", "kaiten-mcp"), ReleaseKaiten: makeCandidate("release", "kaiten"),
 		Profile: filepath.Join(root, "native-lifecycle-profile"), EvidenceDir: evidenceDir,
 		RunnerLabel: "unreviewed-runner", Commit: commit, V2Version: "1.2.3",
-		ReleaseRunID: "123", ReleaseTag: "v1.2.3", ReleaseHeadSHA: commit,
+		ReleaseRunID: "123", ReleaseRunAttempt: "1", ReleaseTag: "v1.2.3", ReleaseHeadSHA: commit,
 		ReleaseManifestSHA256: strings.Repeat("b", 64), ReleaseArchive: releaseArchive,
-		ReleaseArchiveSHA256: strings.Repeat("c", 64),
+		ReleaseArchiveSHA256: strings.Repeat("c", 64), ReleaseKaitenSHA256: strings.Repeat("d", 64),
+		ReleaseKaitenMCPSHA256: strings.Repeat("e", 64),
 	}
 	if err := Run(context.Background(), config); err == nil || !strings.Contains(err.Error(), "unreviewed native lifecycle runner") {
 		t.Fatalf("initialization result = %v", err)
@@ -68,9 +69,10 @@ func TestInitializationFailureRetainsStructuredEvidence(t *testing.T) {
 func TestReleaseBindingRejectsAnotherCommit(t *testing.T) {
 	config := Config{
 		Commit: strings.Repeat("a", 40), ReleaseHeadSHA: strings.Repeat("b", 40),
-		ReleaseRunID: "1", ReleaseTag: "v1.0.0", V2Version: "1.0.0",
+		ReleaseRunID: "1", ReleaseRunAttempt: "1", ReleaseTag: "v1.0.0", V2Version: "1.0.0",
 		ReleaseManifestSHA256: strings.Repeat("c", 64), ReleaseArchive: "kaiten_1.0.0_linux_amd64.tar.gz",
-		ReleaseArchiveSHA256: strings.Repeat("d", 64),
+		ReleaseArchiveSHA256: strings.Repeat("d", 64), ReleaseKaitenSHA256: strings.Repeat("e", 64),
+		ReleaseKaitenMCPSHA256: strings.Repeat("f", 64),
 	}
 	if err := validateReleaseBinding(config); err == nil {
 		t.Fatal("release artifact from another commit was accepted")
@@ -84,14 +86,21 @@ func TestReleaseBindingRequiresExactTagVersionAndNativeArchive(t *testing.T) {
 		extension = ".zip"
 	}
 	config := Config{
-		Commit: commit, ReleaseHeadSHA: commit, ReleaseRunID: "42", ReleaseTag: "v1.2.3", V2Version: "1.2.3",
-		ReleaseManifestSHA256: strings.Repeat("b", 64),
-		ReleaseArchive:        "kaiten_1.2.3_" + runtime.GOOS + "_" + runtime.GOARCH + extension,
-		ReleaseArchiveSHA256:  strings.Repeat("c", 64),
+		Commit: commit, ReleaseHeadSHA: commit, ReleaseRunID: "42", ReleaseRunAttempt: "1", ReleaseTag: "v1.2.3", V2Version: "1.2.3",
+		ReleaseManifestSHA256:  strings.Repeat("b", 64),
+		ReleaseArchive:         "kaiten_1.2.3_" + runtime.GOOS + "_" + runtime.GOARCH + extension,
+		ReleaseArchiveSHA256:   strings.Repeat("c", 64),
+		ReleaseKaitenSHA256:    strings.Repeat("d", 64),
+		ReleaseKaitenMCPSHA256: strings.Repeat("e", 64),
 	}
 	if err := validateReleaseBinding(config); err != nil {
 		t.Fatal(err)
 	}
+	config.ReleaseRunAttempt = "0"
+	if err := validateReleaseBinding(config); err == nil {
+		t.Fatal("invalid release run attempt was accepted")
+	}
+	config.ReleaseRunAttempt = "1"
 	config.V2Version = "1.2.4"
 	if err := validateReleaseBinding(config); err == nil {
 		t.Fatal("release tag/version drift was accepted")

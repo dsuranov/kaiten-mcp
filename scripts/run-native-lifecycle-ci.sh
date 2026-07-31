@@ -7,8 +7,11 @@ runner_label="${NATIVE_CI_RUNNER_LABEL:?NATIVE_CI_RUNNER_LABEL is required}"
 runner_id="${NATIVE_CI_RUNNER_ID:?NATIVE_CI_RUNNER_ID is required}"
 expected_sha="${NATIVE_CI_EXPECTED_SHA:?NATIVE_CI_EXPECTED_SHA is required}"
 expected_release_run_id="${NATIVE_CI_RELEASE_RUN_ID:?NATIVE_CI_RELEASE_RUN_ID is required}"
+workflow_run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+workflow_run_attempt="${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
 extension="$(go env GOEXE)"
 binding="$build/release-binding.txt"
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 read_binding() {
   local key="$1"
@@ -24,9 +27,57 @@ read_binding() {
 }
 
 test -f "$binding"
+test ! -L "$binding"
+expected_binding_keys=(
+  schema
+  release_repository
+  release_repository_id
+  release_run_id
+  release_run_attempt
+  release_workflow
+  release_workflow_path
+  release_event
+  release_conclusion
+  release_tag
+  release_head_sha
+  release_artifact_id
+  release_artifact_name
+  release_artifact_size
+  release_artifact_api_digest
+  release_artifact_zip_sha256
+  release_manifest_sha256
+  release_archive
+  release_archive_sha256
+  release_version
+  release_goos
+  release_goarch
+  release_go_version
+  release_kaiten
+  release_kaiten_sha256
+  release_kaiten_mcp
+  release_kaiten_mcp_sha256
+)
+binding_index=0
+while IFS= read -r binding_line; do
+  test "$binding_index" -lt "${#expected_binding_keys[@]}"
+  binding_key="${binding_line%%=*}"
+  binding_value="${binding_line#*=}"
+  test "$binding_line" = "$binding_key=$binding_value"
+  test "$binding_key" = "${expected_binding_keys[$binding_index]}"
+  test -n "$binding_value"
+  [[ "$binding_value" != *"="* ]]
+  binding_index=$((binding_index + 1))
+done <"$binding"
+test "$binding_index" -eq "${#expected_binding_keys[@]}"
 test "$(read_binding schema)" = "kaiten-native-release-binding/v1"
+release_repository="$(read_binding release_repository)"
+release_repository_id="$(read_binding release_repository_id)"
 release_run_id="$(read_binding release_run_id)"
 release_run_attempt="$(read_binding release_run_attempt)"
+release_workflow="$(read_binding release_workflow)"
+release_workflow_path="$(read_binding release_workflow_path)"
+release_event="$(read_binding release_event)"
+release_conclusion="$(read_binding release_conclusion)"
 release_tag="$(read_binding release_tag)"
 release_head_sha="$(read_binding release_head_sha)"
 release_manifest_sha256="$(read_binding release_manifest_sha256)"
@@ -37,13 +88,20 @@ release_goos="$(read_binding release_goos)"
 release_goarch="$(read_binding release_goarch)"
 release_go_version="$(read_binding release_go_version)"
 release_artifact_id="$(read_binding release_artifact_id)"
+release_artifact_name="$(read_binding release_artifact_name)"
+release_artifact_size="$(read_binding release_artifact_size)"
 release_artifact_api_digest="$(read_binding release_artifact_api_digest)"
 release_artifact_zip_sha256="$(read_binding release_artifact_zip_sha256)"
+release_kaiten="$(read_binding release_kaiten)"
 release_kaiten_sha256="$(read_binding release_kaiten_sha256)"
+release_kaiten_mcp="$(read_binding release_kaiten_mcp)"
 release_kaiten_mcp_sha256="$(read_binding release_kaiten_mcp_sha256)"
 
 [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
 [[ "$expected_release_run_id" =~ ^[1-9][0-9]*$ ]]
+[[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]]
+[[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]]
+[[ "$release_repository_id" =~ ^[1-9][0-9]*$ ]]
 [[ "$release_run_attempt" =~ ^[1-9][0-9]*$ ]]
 [[ "$release_tag" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]
 [[ "$release_version" =~ ^[0-9][0-9A-Za-z.+-]*$ ]]
@@ -51,6 +109,7 @@ release_kaiten_mcp_sha256="$(read_binding release_kaiten_mcp_sha256)"
 [[ "$release_goos" =~ ^(darwin|linux|windows)$ ]]
 [[ "$release_goarch" =~ ^(amd64|arm64)$ ]]
 [[ "$release_artifact_id" =~ ^[1-9][0-9]*$ ]]
+[[ "$release_artifact_size" =~ ^[1-9][0-9]*$ ]]
 [[ "$release_artifact_api_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 [[ "$release_head_sha" =~ ^[0-9a-f]{40}$ ]]
 for digest in "$release_manifest_sha256" "$release_archive_sha256" "$release_artifact_zip_sha256" "$release_kaiten_sha256" "$release_kaiten_mcp_sha256"; do
@@ -58,20 +117,39 @@ for digest in "$release_manifest_sha256" "$release_archive_sha256" "$release_art
 done
 test "$release_head_sha" = "$expected_sha"
 test "$release_run_id" = "$expected_release_run_id"
+test "$release_run_attempt" = "1"
+test "$release_repository" = "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+test "${GITHUB_SHA:?GITHUB_SHA is required}" = "$expected_sha"
+test "${GITHUB_REF:?GITHUB_REF is required}" = "refs/tags/$release_tag"
+test "${GITHUB_REF_NAME:?GITHUB_REF_NAME is required}" = "$release_tag"
+test "$release_workflow" = "Release"
+if [[ "$release_workflow_path" != ".github/workflows/release.yml" && "$release_workflow_path" != ".github/workflows/release.yml@$release_tag" && "$release_workflow_path" != ".github/workflows/release.yml@refs/tags/$release_tag" ]]; then
+  echo "release binding has an unexpected workflow path" >&2
+  exit 1
+fi
+test "$release_event" = "push"
+test "$release_conclusion" = "success"
 test "$release_tag" = "v$release_version"
+test "$release_artifact_name" = "release-assets"
 test "$release_artifact_api_digest" = "sha256:$release_artifact_zip_sha256"
 test "$release_goos" = "$(go env GOOS)"
 test "$release_goarch" = "$(go env GOARCH)"
 test "$release_go_version" = "$(go env GOVERSION)"
+test "$release_kaiten" = "kaiten$extension"
+test "$release_kaiten_mcp" = "kaiten-mcp$extension"
 commit="$release_head_sha"
-mkdir -p "$evidence"
+if [[ -e "$evidence" || -L "$evidence" ]]; then
+  echo "refusing to reuse native lifecycle evidence destination $evidence" >&2
+  exit 1
+fi
+mkdir -m 0700 "$evidence"
 {
   echo "runner_label=$runner_label"
   echo "runner_id=$runner_id"
   echo "runner_os=${RUNNER_OS:-local}"
   echo "candidate_commit=$commit"
-  echo "workflow_run_id=${GITHUB_RUN_ID:-local}"
-  echo "workflow_run_attempt=${GITHUB_RUN_ATTEMPT:-local}"
+  echo "workflow_run_id=$workflow_run_id"
+  echo "workflow_run_attempt=$workflow_run_attempt"
   while IFS= read -r line; do
     printf 'binding_%s\n' "$line"
   done <"$binding"
@@ -90,11 +168,14 @@ run_harness() {
     --release-kaiten "$fixture_root/release/kaiten$extension" \
     --v2-version "$release_version" \
     --release-run-id "$release_run_id" \
+    --release-run-attempt "$release_run_attempt" \
     --release-tag "$release_tag" \
     --release-head-sha "$release_head_sha" \
     --release-manifest-sha256 "$release_manifest_sha256" \
     --release-archive "$release_archive" \
     --release-archive-sha256 "$release_archive_sha256" \
+    --release-kaiten-sha256 "$release_kaiten_sha256" \
+    --release-kaiten-mcp-sha256 "$release_kaiten_mcp_sha256" \
     --profile "$profile" \
     --evidence "$evidence_root" \
     --runner-label "$runner_label" \
@@ -117,30 +198,64 @@ if id "$native_user" >/dev/null 2>&1; then
   exit 1
 fi
 
-stage="/tmp/kaiten-native-lifecycle-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+stage="/tmp/kaiten-native-lifecycle-${workflow_run_id}-${workflow_run_attempt}"
 profile="$stage/native-lifecycle-profile-$runner_id"
 created_user=false
-cleanup() {
+stage_created=false
+cleanup_complete=false
+uid=""
+finish_linux() {
+  local original_status=$?
+  local copy_status=0
+  local cleanup_status=0
+  local resolved_uid="$uid"
+  trap - EXIT
   set +e
   if [[ "$created_user" == true ]]; then
-    uid="$(id -u "$native_user" 2>/dev/null)"
-    if [[ -n "$uid" ]]; then
-      sudo systemctl stop "user@$uid.service" >/dev/null 2>&1
-      sudo loginctl disable-linger "$native_user" >/dev/null 2>&1
+    if [[ -z "$resolved_uid" ]]; then
+      resolved_uid="$(id -u "$native_user" 2>/dev/null)"
     fi
-    sudo userdel --remove "$native_user" >/dev/null 2>&1
+    if [[ ! "$resolved_uid" =~ ^[1-9][0-9]*$ ]]; then
+      sudo userdel "$native_user"
+      cleanup_status=$?
+      if id "$native_user" >/dev/null 2>&1 || ! sudo rmdir -- "$stage"; then
+        cleanup_status=1
+      fi
+    else
+      if [[ -d "$stage/evidence" && ! -L "$stage/evidence" ]]; then
+        sudo cp -R "$stage/evidence/." "$evidence/"
+        copy_status=$?
+        if [[ "$copy_status" -eq 0 ]]; then
+          sudo chown -R "$(id -u):$(id -g)" "$evidence"
+          copy_status=$?
+        fi
+      else
+        copy_status=1
+      fi
+      "$script_directory/cleanup-native-lifecycle-linux.sh" "$native_user" "$resolved_uid" "$stage" "$evidence"
+      cleanup_status=$?
+      if [[ "$cleanup_status" -eq 0 ]]; then
+        cleanup_complete=true
+      fi
+    fi
+  elif [[ "$stage_created" == true ]]; then
+    sudo rmdir -- "$stage"
+    cleanup_status=$?
   fi
-  if [[ "$stage" == /tmp/kaiten-native-lifecycle-* ]]; then
-    sudo rm -rf -- "$stage"
+  if [[ "$original_status" -ne 0 || "$copy_status" -ne 0 || "$cleanup_status" -ne 0 || "$cleanup_complete" != true ]]; then
+    exit 1
   fi
+  exit 0
 }
-trap cleanup EXIT
+trap finish_linux EXIT
 
 if [[ -e "$stage" ]]; then
   echo "refusing to reuse existing Linux lifecycle stage $stage" >&2
   exit 1
 fi
+test -x "$script_directory/cleanup-native-lifecycle-linux.sh"
 sudo install -d -m 0755 "$stage"
+stage_created=true
 sudo useradd --home-dir "$profile" --no-create-home --shell /bin/bash "$native_user"
 created_user=true
 uid="$(id -u "$native_user")"
@@ -176,11 +291,14 @@ sudo -u "$native_user" env \
     --release-kaiten "$stage/build/release/kaiten" \
     --v2-version "$release_version" \
     --release-run-id "$release_run_id" \
+    --release-run-attempt "$release_run_attempt" \
     --release-tag "$release_tag" \
     --release-head-sha "$release_head_sha" \
     --release-manifest-sha256 "$release_manifest_sha256" \
     --release-archive "$release_archive" \
     --release-archive-sha256 "$release_archive_sha256" \
+    --release-kaiten-sha256 "$release_kaiten_sha256" \
+    --release-kaiten-mcp-sha256 "$release_kaiten_mcp_sha256" \
     --profile "$profile" \
     --evidence "$stage/evidence" \
     --runner-label "$runner_label" \
@@ -188,6 +306,4 @@ sudo -u "$native_user" env \
 result=$?
 set -e
 
-sudo cp -R "$stage/evidence/." "$evidence/"
-sudo chown -R "$(id -u):$(id -g)" "$evidence"
 exit "$result"

@@ -51,6 +51,8 @@ jobs:
         run: |
           go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go
           go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go
+          go test ./scripts/sanitize-native-lifecycle-evidence.go ./scripts/sanitize-native-lifecycle-evidence_test.go
+          (cd scripts && go test ./cleanup-native-lifecycle-linux_test.go)
 
       - name: Check gofmt
         shell: bash

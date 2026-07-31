@@ -21,10 +21,13 @@ type Config struct {
 	ReleaseKaiten                        string
 	Profile, EvidenceDir                 string
 	RunnerLabel, Commit                  string
-	ReleaseRunID, ReleaseTag, V2Version  string
+	ReleaseRunID, ReleaseRunAttempt      string
+	ReleaseTag, V2Version                string
 	ReleaseHeadSHA                       string
 	ReleaseManifestSHA256                string
 	ReleaseArchive, ReleaseArchiveSHA256 string
+	ReleaseKaitenSHA256                  string
+	ReleaseKaitenMCPSHA256               string
 }
 
 type harness struct {
@@ -177,17 +180,23 @@ func validateReleaseBinding(config Config) error {
 	if matched, _ := regexp.MatchString(`^[1-9][0-9]*$`, config.ReleaseRunID); !matched {
 		return errors.New("release run ID must be a positive decimal identifier")
 	}
-	if matched, _ := regexp.MatchString(`^v[0-9][0-9A-Za-z.+_-]*$`, config.ReleaseTag); !matched {
+	if config.ReleaseRunAttempt != "1" {
+		return errors.New("release run attempt must be exactly 1 because artifact records do not attest reruns")
+	}
+	if matched, _ := regexp.MatchString(`^v[0-9][0-9A-Za-z.+-]*$`, config.ReleaseTag); !matched {
 		return errors.New("release tag must be an explicit v-prefixed tag")
 	}
-	if matched, _ := regexp.MatchString(`^[0-9][0-9A-Za-z.+_-]*$`, config.V2Version); !matched || config.V2Version == "native-v1" || config.V2Version == "native-v3" {
+	if matched, _ := regexp.MatchString(`^[0-9][0-9A-Za-z.+-]*$`, config.V2Version); !matched || config.V2Version == "native-v1" || config.V2Version == "native-v3" {
 		return errors.New("shipped v2 version must be explicit and distinct from lifecycle fixtures")
 	}
 	if strings.TrimPrefix(config.ReleaseTag, "v") != config.V2Version {
 		return errors.New("shipped binary version must exactly match the Release workflow tag")
 	}
-	if !lowerDigest.MatchString(config.ReleaseManifestSHA256) || !lowerDigest.MatchString(config.ReleaseArchiveSHA256) {
-		return errors.New("release manifest and archive identities must be lowercase SHA-256")
+	if !lowerDigest.MatchString(config.ReleaseManifestSHA256) || !lowerDigest.MatchString(config.ReleaseArchiveSHA256) || !lowerDigest.MatchString(config.ReleaseKaitenSHA256) || !lowerDigest.MatchString(config.ReleaseKaitenMCPSHA256) {
+		return errors.New("release manifest, archive, and binary identities must be lowercase SHA-256")
+	}
+	if config.ReleaseKaitenSHA256 == config.ReleaseKaitenMCPSHA256 {
+		return errors.New("release kaiten and kaiten-mcp binaries must have distinct SHA-256 identities")
 	}
 	if filepath.Base(config.ReleaseArchive) != config.ReleaseArchive || (!strings.HasSuffix(config.ReleaseArchive, ".tar.gz") && !strings.HasSuffix(config.ReleaseArchive, ".zip")) {
 		return errors.New("release archive must be a base-name tar.gz or zip artifact")

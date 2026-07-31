@@ -130,6 +130,12 @@ func main() {
 		if !strings.Contains(raw, "go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go") {
 			fail("%s must test the native release binding helper", name)
 		}
+		if !strings.Contains(raw, "go test ./scripts/sanitize-native-lifecycle-evidence.go ./scripts/sanitize-native-lifecycle-evidence_test.go") {
+			fail("%s must test the native evidence upload sanitizer", name)
+		}
+		if !strings.Contains(raw, "go test ./cleanup-native-lifecycle-linux_test.go") {
+			fail("%s must test the isolated Linux cleanup helper", name)
+		}
 	}
 
 	native := parseWorkflow(".github/workflows/native-lifecycle.yml")
@@ -172,21 +178,55 @@ func main() {
 	for _, required := range []string{
 		"expected_sha:",
 		"release_run_id:",
+		"WORKFLOW_SHA: ${{ github.sha }}",
+		"WORKFLOW_REF: ${{ github.ref }}",
+		`test "$WORKFLOW_SHA" = "$EXPECTED_SHA"`,
+		`[[ "$WORKFLOW_REF" =~ ^refs/tags/v[0-9][0-9A-Za-z.+-]*$ ]]`,
 		"runs-on: ${{ matrix.runner }}",
 		"ref: ${{ inputs.expected_sha }}",
 		"persist-credentials: false",
 		"run: ./scripts/build-native-lifecycle-fixtures.sh",
 		"go run ./scripts/prepare-native-lifecycle-release.go",
 		"go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go",
+		"go test ./scripts/sanitize-native-lifecycle-evidence.go ./scripts/sanitize-native-lifecycle-evidence_test.go",
 		"GH_TOKEN: ${{ github.token }}",
 		"run: ./scripts/run-native-lifecycle-ci.sh",
-		"if: always()",
+		"go run ./scripts/sanitize-native-lifecycle-evidence.go \"$RUNNER_TEMP/native-lifecycle-evidence\"",
+		"if: ${{ always() && steps.sanitize.outcome == 'success' }}",
 		"name: native-lifecycle-${{ matrix.id }}",
 		"go run ./scripts/verify-dependency-policy.go",
 		"go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go",
 	} {
 		if !strings.Contains(native.raw, required) {
 			fail("native lifecycle workflow is missing reviewed gate fragment %q", required)
+		}
+	}
+	if strings.Count(native.raw, "GH_TOKEN: ${{ github.token }}") != 1 {
+		fail("native lifecycle token must be exposed only to the exact release binding step")
+	}
+	if !strings.Contains(native.raw, "go test ./cleanup-native-lifecycle-linux_test.go") {
+		fail("native lifecycle must test the reviewed Linux cleanup helper")
+	}
+	wrapperData, err := os.ReadFile("scripts/run-native-lifecycle-ci.sh")
+	check(err)
+	wrapper := string(wrapperData)
+	if !strings.Contains(wrapper, `"$script_directory/cleanup-native-lifecycle-linux.sh" "$native_user" "$resolved_uid" "$stage" "$evidence"`) {
+		fail("native lifecycle wrapper must invoke the reviewed Linux cleanup helper with exact targets")
+	}
+	for _, required := range []string{`test "$release_run_attempt" = "1"`, `test "${GITHUB_SHA:?GITHUB_SHA is required}" = "$expected_sha"`, `test "${GITHUB_REF:?GITHUB_REF is required}" = "refs/tags/$release_tag"`, `--release-kaiten-sha256 "$release_kaiten_sha256"`, `--release-kaiten-mcp-sha256 "$release_kaiten_mcp_sha256"`} {
+		if !strings.Contains(wrapper, required) {
+			fail("native lifecycle wrapper is missing exact release binding %q", required)
+		}
+	}
+	bindingHelperData, err := os.ReadFile("scripts/prepare-native-lifecycle-release.go")
+	check(err)
+	bindingHelper := string(bindingHelperData)
+	if strings.Contains(bindingHelper, `"os/exec"`) || strings.Contains(bindingHelper, "exec.Command") {
+		fail("token-bearing native release binding helper must never execute downloaded artifact code")
+	}
+	for _, required := range []string{"run.RunAttempt != 1", "downloadedBytes != selected.SizeInBytes", "maxTarStreamBytes", `request.Header.Del("Referer")`} {
+		if !strings.Contains(bindingHelper, required) {
+			fail("native release binding helper is missing fail-closed invariant %q", required)
 		}
 	}
 
