@@ -24,7 +24,14 @@ func FetchPages(ctx context.Context, skip int, limit *int, fetchAll bool, fetch 
 		pageSize = *limit
 	}
 	if !fetchAll {
-		return fetch(ctx, skip, pageSize)
+		page, err := fetch(ctx, skip, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		if limit != nil && len(page) > *limit {
+			page = page[:*limit]
+		}
+		return page, nil
 	}
 	result := make([]any, 0)
 	seen := make(map[string]struct{})

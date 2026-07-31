@@ -26,12 +26,8 @@ func (s *Service) ListBoards(ctx context.Context, spaceID *int64, limit *int) (a
 	if spaceID != nil {
 		path := fmt.Sprintf("/spaces/%d/boards", *spaceID)
 		key := fmt.Sprintf("boards:space:%d", *spaceID)
-		query := url.Values{}
-		if limit != nil {
-			query.Set("limit", strconv.Itoa(*limit))
-			key += ":limit:" + strconv.Itoa(*limit)
-		}
-		return s.Client.CachedJSON(ctx, key, path, query)
+		value, cached, err := s.Client.CachedJSON(ctx, key, path, nil)
+		return boundedArray(value, limit), cached, err
 	}
 	key := "boards:all"
 	if limit != nil {
@@ -149,7 +145,8 @@ func (s *Service) ListUsers(ctx context.Context, spaceID *int64, skip, limit *in
 	if spaceID != nil {
 		path = fmt.Sprintf("/spaces/%d/users", *spaceID)
 	}
-	return s.Client.CachedJSON(ctx, key, path, query)
+	value, cached, err := s.Client.CachedJSON(ctx, key, path, query)
+	return boundedArray(value, limit), cached, err
 }
 
 func (s *Service) ResolveUser(ctx context.Context, selector string) (Resource, bool, error) {
@@ -281,4 +278,15 @@ func cloneValues(values url.Values) url.Values {
 		result[key] = append([]string(nil), entries...)
 	}
 	return result
+}
+
+func boundedArray(value any, limit *int) any {
+	if limit == nil {
+		return value
+	}
+	items, ok := value.([]any)
+	if !ok || len(items) <= *limit {
+		return value
+	}
+	return items[:*limit]
 }

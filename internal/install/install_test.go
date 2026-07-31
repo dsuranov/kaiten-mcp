@@ -228,3 +228,30 @@ func TestEnvironmentFileNeverEntersServiceDefinition(t *testing.T) {
 	}
 	_ = fmt.Sprintf("%s", layout.Root)
 }
+
+func TestWindowsInstalledExecutableSchedulesScopedSelfRemoval(t *testing.T) {
+	home := t.TempDir()
+	layout, _ := layoutFor("windows", home)
+	for _, path := range []string{layout.Binary, layout.Environment, layout.ServiceDefinition} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commands := &fakeCommands{}
+	engine := &Engine{GOOS: "windows", Home: home, Executable: layout.Binary, Commands: commands, Health: &fakeHealth{}}
+	if err := engine.Uninstall(context.Background(), strings.NewReader("n\n"), io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(commands.calls, "\n")
+	if !strings.Contains(joined, "ProcessId -ne") || !strings.Contains(joined, "uninstall-cleanup.cmd") {
+		t.Fatalf("self-removal was not scoped and scheduled: %s", joined)
+	}
+	cleanup := filepath.Join(filepath.Dir(layout.Log), "uninstall-cleanup.cmd")
+	contents, err := os.ReadFile(cleanup)
+	if err != nil || !strings.Contains(string(contents), layout.Binary) {
+		t.Fatalf("cleanup script missing: %q err=%v", contents, err)
+	}
+}

@@ -321,6 +321,31 @@ func TestStreamableHTTPInitializationHealthAndShutdown(t *testing.T) {
 	}
 }
 
+func TestHTTPRejectsUnsafeOriginAndHealthMutation(t *testing.T) {
+	server, _, _ := testServer(t, false)
+	httpServer := httptest.NewServer(server.HTTPHandler("/mcp"))
+	defer httpServer.Close()
+	request, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	request.Header.Set("Origin", "http://localhost.evil.example")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsafe origin status: %d", response.StatusCode)
+	}
+	request, _ = http.NewRequest(http.MethodPost, httpServer.URL+"/health", nil)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("health accepted mutation method: %d", response.StatusCode)
+	}
+}
+
 func waitForListener(t *testing.T, port int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

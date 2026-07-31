@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"time"
@@ -218,7 +219,12 @@ func (s *Server) ServeStdio(ctx context.Context, input io.Reader, output io.Writ
 // are not needed because this server emits no unsolicited notifications.
 func (s *Server) HTTPHandler(path string) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": version.String(), "runtime": runtime.Version()})
 	})
 	mux.HandleFunc(path, func(w http.ResponseWriter, request *http.Request) {
@@ -267,7 +273,16 @@ func validOrigin(request *http.Request) bool {
 	if origin == "" {
 		return true
 	}
-	return strings.HasPrefix(origin, "http://127.0.0.1") || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://[::1]") || strings.HasPrefix(origin, "https://127.0.0.1") || strings.HasPrefix(origin, "https://localhost")
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {

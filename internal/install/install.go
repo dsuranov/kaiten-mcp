@@ -237,8 +237,12 @@ func (e *Engine) Uninstall(ctx context.Context, input io.Reader, output, diagnos
 	if err := e.deactivate(ctx, layout); err != nil {
 		failures = append(failures, fmt.Errorf("stop service: %w", err))
 	}
+	deferWindowsSelfRemoval := e.GOOS == "windows" && samePath(e.Executable, layout.Binary)
 	for _, path := range []string{layout.Binary, layout.Environment, layout.ServiceDefinition} {
 		for _, candidate := range []string{path, path + ".bak"} {
+			if candidate == layout.Binary && deferWindowsSelfRemoval {
+				continue
+			}
 			if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
 				failures = append(failures, fmt.Errorf("remove %s: %w", candidate, err))
 			}
@@ -249,6 +253,11 @@ func (e *Engine) Uninstall(ctx context.Context, input io.Reader, output, diagnos
 			if err := mergeClientConfig(path, "", true); err != nil && !errors.Is(err, os.ErrNotExist) {
 				fmt.Fprintf(diagnostics, "warning: client configuration %s was not updated: %v\n", path, err)
 			}
+		}
+	}
+	if deferWindowsSelfRemoval {
+		if err := e.scheduleWindowsSelfRemoval(ctx, layout); err != nil {
+			failures = append(failures, fmt.Errorf("schedule executable removal: %w", err))
 		}
 	}
 	fmt.Fprintf(output, "Kaiten MCP service files removed. Logs were preserved at %s\n", filepath.Dir(layout.Log))
@@ -298,11 +307,29 @@ func (e *Engine) deactivate(ctx context.Context, layout Layout) error {
 		if !fileExists(layout.Binary) {
 			return nil
 		}
-		script := fmt.Sprintf("$target='%s'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }", strings.ReplaceAll(layout.Binary, "'", "''"))
+		script := fmt.Sprintf("$target='%s'; $self=%d; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target -and $_.ProcessId -ne $self } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }", strings.ReplaceAll(layout.Binary, "'", "''"), os.Getpid())
 		return e.Commands.Run(ctx, "powershell", "-NoProfile", "-Command", script)
 	default:
 		return errors.New("unsupported operating system")
 	}
+}
+
+func (e *Engine) scheduleWindowsSelfRemoval(ctx context.Context, layout Layout) error {
+	cleanup := filepath.Join(filepath.Dir(layout.Log), "uninstall-cleanup.cmd")
+	contents := fmt.Sprintf("@echo off\r\nping 127.0.0.1 -n 3 >nul\r\ndel /f /q %s\r\ndel /f /q \"%%~f0\"\r\n", windowsQuote(layout.Binary))
+	if err := writeAtomic(cleanup, []byte(contents), 0o600); err != nil {
+		return err
+	}
+	return e.Commands.Run(ctx, "cmd", "/C", "start", "", "/b", cleanup)
+}
+
+func samePath(first, second string) bool {
+	firstAbsolute, firstErr := filepath.Abs(first)
+	secondAbsolute, secondErr := filepath.Abs(second)
+	if firstErr != nil || secondErr != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(firstAbsolute), filepath.Clean(secondAbsolute))
 }
 
 func prompt(reader *bufio.Reader, output io.Writer, label, fallback string) (string, error) {

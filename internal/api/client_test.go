@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -133,6 +134,16 @@ func TestFetchPagesStopsOnRepeatedPage(t *testing.T) {
 	result, err = FetchPages(context.Background(), 0, &zero, true, func(context.Context, int, int) ([]any, error) { calls++; return nil, nil })
 	if err != nil || len(result) != 0 || calls != 0 {
 		t.Fatalf("limit zero should not fetch: result=%v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestSinglePageIsCappedWhenUpstreamIgnoresLimit(t *testing.T) {
+	limit := 2
+	result, err := FetchPages(context.Background(), 0, &limit, false, func(context.Context, int, int) ([]any, error) {
+		return []any{1, 2, 3, 4}, nil
+	})
+	if err != nil || !reflect.DeepEqual(result, []any{1, 2}) {
+		t.Fatalf("single-page limit not enforced: %#v err=%v", result, err)
 	}
 }
 
