@@ -76,9 +76,10 @@ misses and a zero TTL disables reuse.
 ### HTTP boundary
 
 The HTTP client is the only component that attaches the bearer token. It sets
-JSON headers, applies per-request timeouts, a local rate gate, and a concurrency
-limit. Only idempotent reads are eligible for bounded retries. Mutations are
-sent at most once.
+JSON headers and applies whole-operation deadlines, a local rate gate, and a
+concurrency limit. Canceled rate waiters do not reserve future capacity. Only
+idempotent reads are eligible for bounded retries. Mutations are sent at most
+once.
 
 ### Installer boundary
 

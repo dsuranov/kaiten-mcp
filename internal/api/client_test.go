@@ -94,6 +94,150 @@ func TestConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestCanceledRateLimitStormDoesNotDelayLiveTraffic(t *testing.T) {
+	var requests atomic.Int32
+	client, _ := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}), 1, 4)
+	client.timeout = 250 * time.Millisecond
+
+	var group sync.WaitGroup
+	var cancellationErrors atomic.Int32
+	for i := 0; i < 256; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := client.JSON(ctx, http.MethodPost, "/canceled", nil, nil); err != nil {
+				cancellationErrors.Add(1)
+			}
+		}()
+	}
+	group.Wait()
+	if cancellationErrors.Load() != 256 {
+		t.Fatalf("already-canceled operations returned %d errors, want 256", cancellationErrors.Load())
+	}
+
+	outer, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	if _, err := client.JSON(outer, http.MethodPost, "/live", nil, nil); err != nil {
+		t.Fatalf("live request after cancellation storm failed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("canceled waiters reserved future rate capacity; live latency=%v", elapsed)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("canceled operations reached the upstream: %d request(s)", requests.Load())
+	}
+}
+
+func TestCancellationWhileQueuedDoesNotAdvanceRateSchedule(t *testing.T) {
+	gate := newRateGate(1)
+	initialNext := time.Unix(2_000_000_000, 0)
+	gate.next = initialNext
+	<-gate.turn
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- gate.Wait(ctx)
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued waiter returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled waiter remained blocked behind the rate gate")
+	}
+	if !gate.next.Equal(initialNext) {
+		t.Fatalf("canceled queued waiter moved schedule from %v to %v", initialNext, gate.next)
+	}
+	gate.turn <- struct{}{}
+}
+
+func TestCancellationDuringRateDelayDoesNotAdvanceSchedule(t *testing.T) {
+	gate := newRateGate(1)
+	if err := gate.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	initialNext := gate.next
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- gate.Wait(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for len(gate.turn) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(gate.turn) != 0 {
+		t.Fatal("waiter did not enter the scheduled rate delay")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("scheduled waiter returned %v", err)
+	}
+	if !gate.next.Equal(initialNext) {
+		t.Fatalf("canceled scheduled waiter moved rate time from %v to %v", initialNext, gate.next)
+	}
+}
+
+func TestConfiguredTimeoutIncludesConcurrencyQueue(t *testing.T) {
+	var requests atomic.Int32
+	client, _ := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}), 10000, 1)
+	client.timeout = 30 * time.Millisecond
+	client.semaphore <- struct{}{}
+	defer func() { <-client.semaphore }()
+
+	outer, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := client.JSON(outer, http.MethodPost, "/queued", nil, nil)
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("configured timeout began after concurrency wait: %v", elapsed)
+	}
+	var apiError *Error
+	if !errors.As(err, &apiError) || !strings.Contains(apiError.Message, "timed out") {
+		t.Fatalf("concurrency timeout was not sanitized: %#v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("timed-out queued operation reached upstream: %d", requests.Load())
+	}
+}
+
+func TestConfiguredTimeoutIncludesRateQueue(t *testing.T) {
+	var requests atomic.Int32
+	client, _ := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}), 5, 1)
+	client.timeout = 30 * time.Millisecond
+	if _, err := client.JSON(context.Background(), http.MethodPost, "/prime", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	_, err := client.JSON(context.Background(), http.MethodPost, "/rate-queued", nil, nil)
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("configured timeout began after rate wait: %v", elapsed)
+	}
+	var apiError *Error
+	if !errors.As(err, &apiError) || !strings.Contains(apiError.Message, "timed out") {
+		t.Fatalf("rate timeout was not sanitized: %#v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("rate-queued timeout reached upstream: %d request(s)", requests.Load())
+	}
+}
+
 func TestCacheCoalescesAndExpires(t *testing.T) {
 	cache := NewCache(30 * time.Millisecond)
 	var calls atomic.Int32

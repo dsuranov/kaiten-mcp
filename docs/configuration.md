@@ -31,7 +31,7 @@ whole value are removed. Variable expansion is not performed.
 | `KAITEN_RATE_LIMIT` | none | Rate alias, used only when the primary variable is unset. |
 | `KAITEN_CACHE_TTL_SECONDS` | `60` | Finite discovery-cache TTL at least zero; zero disables reuse. |
 | `KAITEN_MAX_CONCURRENCY` | `5` | Maximum concurrent upstream requests; integer at least one. |
-| `KAITEN_TIMEOUT_SECONDS` | `20` | Positive finite timeout for each upstream request. |
+| `KAITEN_TIMEOUT_SECONDS` | `20` | Positive finite deadline for the whole API operation, including local concurrency/rate queues, retry waits, and HTTP. |
 | `KAITEN_ENABLE_WRITE_TOOLS` | `false` | MCP write tools are registered only when the trimmed value equals `true`, case-insensitively. |
 | `KAITEN_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http`. |
 | `KAITEN_MCP_HOST` | `127.0.0.1` | HTTP bind host; an empty value becomes loopback. |

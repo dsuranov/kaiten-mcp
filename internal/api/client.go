@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dsuranov/kaiten-mcp/internal/config"
@@ -80,14 +79,20 @@ func (c *Client) JSON(ctx context.Context, method, path string, query url.Values
 	if method == http.MethodGet || method == http.MethodHead {
 		attempts = maxReadAttempts
 	}
+	operationContext := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		operationContext, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
 	var last error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			if err := waitContext(ctx, retryBackoff(attempt)); err != nil {
+			if err := waitContext(operationContext, retryBackoff(attempt)); err != nil {
 				return nil, sanitizedContextError(err)
 			}
 		}
-		value, retryAfter, retryable, err := c.once(ctx, method, path, query, encoded, body != nil)
+		value, retryAfter, retryable, err := c.once(operationContext, method, path, query, encoded, body != nil)
 		if err == nil {
 			return value, nil
 		}
@@ -96,7 +101,7 @@ func (c *Client) JSON(ctx context.Context, method, path string, query url.Values
 			break
 		}
 		if retryAfter > 0 {
-			if err := waitContext(ctx, retryAfter); err != nil {
+			if err := waitContext(operationContext, retryAfter); err != nil {
 				return nil, sanitizedContextError(err)
 			}
 		}
@@ -105,6 +110,9 @@ func (c *Client) JSON(ctx context.Context, method, path string, query url.Values
 }
 
 func (c *Client) once(ctx context.Context, method, path string, query url.Values, encoded []byte, hasBody bool) (any, time.Duration, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, false, sanitizedContextError(err)
+	}
 	select {
 	case c.semaphore <- struct{}{}:
 		defer func() { <-c.semaphore }()
@@ -114,12 +122,6 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if err := c.rate.Wait(ctx); err != nil {
 		return nil, 0, false, sanitizedContextError(err)
 	}
-	requestContext := ctx
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		requestContext, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-	}
 	u := *c.baseURL
 	u.Path = strings.TrimRight(c.baseURL.Path, "/") + c.prefix + "/" + strings.TrimLeft(path, "/")
 	u.RawQuery = query.Encode()
@@ -127,7 +129,7 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if hasBody {
 		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(requestContext, method, u.String(), reader)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
 	if err != nil {
 		return nil, 0, false, &Error{Type: "validation", Message: "could not construct Kaiten request"}
 	}
@@ -138,8 +140,8 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		if requestContext.Err() != nil {
-			return nil, 0, false, sanitizedContextError(requestContext.Err())
+		if ctx.Err() != nil {
+			return nil, 0, false, sanitizedContextError(ctx.Err())
 		}
 		return nil, 0, true, &Error{Type: "upstream", Message: "Kaiten request failed before a response was received"}
 	}
@@ -244,23 +246,41 @@ func waitContext(ctx context.Context, duration time.Duration) error {
 }
 
 type rateGate struct {
-	mu       sync.Mutex
 	interval time.Duration
 	next     time.Time
+	turn     chan struct{}
 }
 
 func newRateGate(requestsPerSecond float64) *rateGate {
-	return &rateGate{interval: time.Duration(float64(time.Second) / requestsPerSecond)}
+	gate := &rateGate{interval: time.Duration(float64(time.Second) / requestsPerSecond), turn: make(chan struct{}, 1)}
+	gate.turn <- struct{}{}
+	return gate
 }
 
 func (g *rateGate) Wait(ctx context.Context) error {
-	g.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-g.turn:
+		defer func() { g.turn <- struct{}{} }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now := time.Now()
 	when := now
 	if g.next.After(now) {
 		when = g.next
 	}
-	g.next = when.Add(g.interval)
-	g.mu.Unlock()
-	return waitContext(ctx, time.Until(when))
+	if err := waitContext(ctx, time.Until(when)); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	g.next = time.Now().Add(g.interval)
+	return nil
 }
