@@ -87,7 +87,50 @@ func main() {
 		fail("CI must run the two-build snapshot reproducibility gate")
 	}
 
-	allRaw := ci.raw + "\n" + release.raw
+	native := parseWorkflow(".github/workflows/native-lifecycle.yml")
+	if !native.topExplicit || !samePermissions(native.topPermissions, permissionSet{"contents": "read"}) {
+		fail("native lifecycle top-level permissions must be exactly contents: read")
+	}
+	if len(native.jobs) != 1 || native.jobs[0] != "native-lifecycle" {
+		fail("native lifecycle workflow must contain only the reviewed matrix job, got %v", native.jobs)
+	}
+	if len(native.tokenJobs) != 0 {
+		fail("native lifecycle workflow must not explicitly expose GITHUB_TOKEN: %v", native.tokenJobs)
+	}
+	if !strings.Contains(native.raw, "on:\n  workflow_dispatch:\n") {
+		fail("native lifecycle workflow must be manually dispatched")
+	}
+	for _, forbiddenTrigger := range []string{"\n  push:", "\n  pull_request:", "\n  schedule:", "\n  workflow_call:"} {
+		if strings.Contains(native.raw, forbiddenTrigger) {
+			fail("native lifecycle workflow must not use automatic trigger %s", strings.TrimSpace(forbiddenTrigger))
+		}
+	}
+	if strings.Contains(strings.ToLower(native.raw), "self-hosted") {
+		fail("native lifecycle workflow must never select a self-hosted runner")
+	}
+	runnerPattern := regexp.MustCompile(`(?m)^\s+runner:\s*([^\s#]+)\s*$`)
+	var nativeRunners []string
+	for _, match := range runnerPattern.FindAllStringSubmatch(native.raw, -1) {
+		nativeRunners = append(nativeRunners, match[1])
+	}
+	sort.Strings(nativeRunners)
+	wantNativeRunners := []string{"macos-15-intel", "macos-latest", "ubuntu-24.04-arm", "ubuntu-latest", "windows-latest"}
+	if strings.Join(nativeRunners, ",") != strings.Join(wantNativeRunners, ",") {
+		fail("native lifecycle runner labels = %v, want exact GitHub-hosted matrix %v", nativeRunners, wantNativeRunners)
+	}
+	for _, required := range []string{
+		"runs-on: ${{ matrix.runner }}",
+		"run: ./scripts/build-native-lifecycle-fixtures.sh",
+		"run: ./scripts/run-native-lifecycle-ci.sh",
+		"if: always()",
+		"name: native-lifecycle-${{ matrix.id }}",
+	} {
+		if !strings.Contains(native.raw, required) {
+			fail("native lifecycle workflow is missing reviewed gate fragment %q", required)
+		}
+	}
+
+	allRaw := ci.raw + "\n" + release.raw + "\n" + native.raw
 	for _, line := range strings.Split(allRaw, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "go-version:") && trimmed != `go-version: "1.26.5"` {

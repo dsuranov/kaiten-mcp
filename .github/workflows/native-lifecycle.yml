@@ -1,0 +1,75 @@
+name: Native lifecycle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  native-lifecycle:
+    name: Native lifecycle (${{ matrix.id }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-amd64
+            runner: macos-15-intel
+          - id: macos-arm64
+            runner: macos-latest
+          - id: linux-amd64
+            runner: ubuntu-latest
+          - id: linux-arm64
+            runner: ubuntu-24.04-arm
+          - id: windows-amd64
+            runner: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.5"
+          check-latest: false
+          cache: true
+
+      - name: Verify selected Go toolchain
+        run: ./scripts/verify-go-toolchain.sh
+
+      - name: Verify harness helpers and workflow policy
+        shell: bash
+        run: |
+          go run ./scripts/verify-workflows.go
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+          go vet ./internal/nativeci ./cmd/native-lifecycle-harness ./cmd/native-lifecycle-bad-service
+          go test ./internal/nativeci
+
+      - name: Run harness helper race tests
+        if: matrix.id == 'linux-amd64'
+        run: go test -race ./internal/nativeci
+
+      - name: Build native lifecycle fixtures
+        shell: bash
+        run: ./scripts/build-native-lifecycle-fixtures.sh "$RUNNER_TEMP/native-lifecycle-build"
+
+      - name: Run native lifecycle gate
+        shell: bash
+        env:
+          NATIVE_CI_RUNNER_LABEL: ${{ matrix.runner }}
+          NATIVE_CI_RUNNER_ID: ${{ matrix.id }}
+        run: ./scripts/run-native-lifecycle-ci.sh "$RUNNER_TEMP/native-lifecycle-build" "$RUNNER_TEMP/native-lifecycle-evidence"
+
+      - name: Upload native lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: native-lifecycle-${{ matrix.id }}
+          path: ${{ runner.temp }}/native-lifecycle-evidence/
+          if-no-files-found: error
+          retention-days: 14

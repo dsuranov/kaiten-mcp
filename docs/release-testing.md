@@ -135,6 +135,11 @@ and at-most-once mutation cases under the race detector.
 At least one full native installer cycle is mandatory on each supported
 operating system before publishing:
 
+The manually dispatched, GitHub-hosted implementation of this gate is described
+in [Native lifecycle CI](native-lifecycle-ci.md). Its five per-runner evidence
+artifacts must refer to the frozen candidate commit. The existence of the
+workflow is not execution evidence.
+
 | Operating system | Minimum native cycle | Additional architecture evidence |
 | --- | --- | --- |
 | macOS | amd64 or arm64 | Launch smoke on both release architectures. |

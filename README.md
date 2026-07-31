@@ -104,8 +104,10 @@ go build ./cmd/kaiten-mcp
 
 CI additionally checks formatting, coverage, all supported cross-builds,
 release configuration, and byte reproducibility across two independent clean
-builds. Tagged builds use GoReleaser and are created as draft releases until
-the release audit is complete.
+builds. A separate manually dispatched [native lifecycle gate](docs/native-lifecycle-ci.md)
+executes install, restart, update rollback, and uninstall through GitHub-hosted
+operating-system service managers. Tagged builds use GoReleaser and are created
+as draft releases until the release audit is complete.
 
 ## Documentation
 
@@ -115,6 +117,7 @@ the release audit is complete.
 - [Usage](docs/usage.md)
 - [Security](docs/security.md)
 - [Release testing](docs/release-testing.md)
+- [Native lifecycle CI](docs/native-lifecycle-ci.md)
 - [Reproducible builds](docs/reproducible-builds.md)
 - [Clean-room provenance](PROVENANCE.md)
 - [Provenance audit checklist](docs/clean-room-provenance.md)
