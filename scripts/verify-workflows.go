@@ -515,7 +515,9 @@ func newWorkflowLine(number int, original string) workflowLine {
 func parseWorkflow(path string) workflow {
 	data, err := os.ReadFile(path)
 	check(err)
-	result := workflow{jobPermissions: make(map[string]permissionSet), raw: string(data)}
+	raw := strings.ReplaceAll(string(data), "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+	result := workflow{jobPermissions: make(map[string]permissionSet), raw: raw}
 	lines := strings.Split(result.raw, "\n")
 	inJobs := false
 	currentJob := ""

@@ -2,7 +2,37 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseWorkflowCanonicalizesLineEndings(t *testing.T) {
+	t.Parallel()
+	canonical := "name: Release\n\non:\n  push:\n    tags:\n      - \"v*\"\n\npermissions: {}\n"
+	for _, test := range []struct {
+		name      string
+		separator string
+	}{
+		{name: "CRLF", separator: "\r\n"},
+		{name: "CR", separator: "\r"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "release.yml")
+			encoded := strings.ReplaceAll(canonical, "\n", test.separator)
+			if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := parseWorkflow(path).raw; got != canonical {
+				t.Fatalf("parseWorkflow() raw = %q, want %q", got, canonical)
+			}
+		})
+	}
+}
 
 func TestWindowsReachableShellScriptsRequireExplicitBash(t *testing.T) {
 	t.Parallel()
