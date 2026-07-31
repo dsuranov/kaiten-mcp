@@ -80,8 +80,11 @@ func main() {
 	if len(release.tokenJobs) != 1 || release.tokenJobs[0] != "publish" {
 		fail("GITHUB_TOKEN must be exposed exactly once in publish, got %v", release.tokenJobs)
 	}
-	if !strings.Contains(release.raw, "args: release --clean --skip=publish") {
-		fail("read-only release build must explicitly skip publication")
+	if !strings.Contains(release.raw, "install-only: true") || !strings.Contains(release.raw, "run: ./scripts/verify-reproducible-release.sh") {
+		fail("read-only release build must install pinned GoReleaser and run the two-build reproducibility gate")
+	}
+	if !strings.Contains(ci.raw, "run: ./scripts/verify-reproducible-release.sh --snapshot") {
+		fail("CI must run the two-build snapshot reproducibility gate")
 	}
 
 	allRaw := ci.raw + "\n" + release.raw
@@ -96,6 +99,12 @@ func main() {
 		if strings.Contains(trimmed, "github.com/rhysd/actionlint/cmd/actionlint@") && !strings.Contains(trimmed, "actionlint@v1.7.12") {
 			fail("actionlint runner is not pinned to v1.7.12: %s", trimmed)
 		}
+		if strings.HasPrefix(trimmed, "syft-version:") && trimmed != "syft-version: v1.50.0" {
+			fail("Syft is not pinned to v1.50.0: %s", trimmed)
+		}
+	}
+	if strings.Count(allRaw, "version: v2.17.1") < 2 {
+		fail("CI and release must pin GoReleaser v2.17.1")
 	}
 
 	dependabot, err := os.ReadFile(".github/dependabot.yml")

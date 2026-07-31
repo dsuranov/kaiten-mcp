@@ -57,6 +57,12 @@ patched release toolchain. Repository checks reject another compiler version,
 and release acceptance inspects and vulnerability-scans the executable bytes
 extracted from every final archive.
 
+Release reproducibility is checked from two independent clean local clones.
+All archive metadata is fixed from the source commit; Syft remains the package
+evidence producer, while a separately identified normalizer replaces only
+volatile SPDX creation metadata under a documented versioned policy before the
+checksum manifest is created.
+
 ## Excluded material
 
 The implementation team must not access any previous implementation source,

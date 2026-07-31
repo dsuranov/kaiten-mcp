@@ -96,6 +96,13 @@ only their required write scopes. A repository policy check and pinned
 actionlint run validate these rules, while weekly Dependabot updates propose
 reviewable action-pin changes.
 
+The release build also runs twice from independent clean clones. Commit-derived
+metadata is fixed for every archive member, and the gate requires identical
+bytes for ten binaries, ten archives, ten normalized SPDX documents, and the
+checksum manifest. Syft package evidence is validated before checksums; only
+its volatile creation metadata is normalized under the documented
+[reproducibility policy](reproducible-builds.md).
+
 ## Reporting a vulnerability
 
 Use the repository's private security-advisory channel when available. Include

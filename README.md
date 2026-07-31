@@ -102,9 +102,10 @@ go build ./cmd/kaiten
 go build ./cmd/kaiten-mcp
 ```
 
-CI additionally checks formatting, coverage, all supported cross-builds, and
-release configuration. Tagged builds use GoReleaser and are created as draft
-releases until the release audit is complete.
+CI additionally checks formatting, coverage, all supported cross-builds,
+release configuration, and byte reproducibility across two independent clean
+builds. Tagged builds use GoReleaser and are created as draft releases until
+the release audit is complete.
 
 ## Documentation
 
@@ -114,6 +115,7 @@ releases until the release audit is complete.
 - [Usage](docs/usage.md)
 - [Security](docs/security.md)
 - [Release testing](docs/release-testing.md)
+- [Reproducible builds](docs/reproducible-builds.md)
 - [Clean-room provenance](PROVENANCE.md)
 - [Provenance audit checklist](docs/clean-room-provenance.md)
 

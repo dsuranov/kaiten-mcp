@@ -80,12 +80,16 @@ jobs:
         with:
           syft-version: v1.50.0
 
-      - name: Build archives, checksums, and SBOMs
+      - name: Install pinned GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
           version: v2.17.1
-          args: release --clean --skip=publish
+          install-only: true
+
+      - name: Build twice and prove byte reproducibility
+        shell: bash
+        run: ./scripts/verify-reproducible-release.sh
 
       - name: Validate release evidence
         shell: bash
@@ -145,6 +149,14 @@ jobs:
             dist/checksums.txt
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload reproducibility evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reproducibility-evidence
+          path: dist/reproducibility.txt
+          if-no-files-found: error
+          retention-days: 14
 
   attest:
     name: Attest checksum manifest

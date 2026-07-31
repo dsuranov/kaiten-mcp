@@ -49,9 +49,13 @@ Before tagging, build a local snapshot with the same pinned GoReleaser major and
 Syft version used by the release workflow:
 
 ```sh
-goreleaser check
-goreleaser release --snapshot --clean
+./scripts/verify-release-tools.sh
+./scripts/verify-reproducible-release.sh --snapshot
 ```
+
+This creates two independent clean clones and requires byte identity for all
+ten raw binaries and all 21 publishable release files. See [Reproducible
+builds](reproducible-builds.md) for the archive and SPDX normalization policy.
 
 ## 2. Artifact inventory
 
@@ -75,6 +79,10 @@ Also require:
 - one SPDX JSON SBOM for every executable archive;
 - a checksum-manifest provenance attestation;
 - draft release notes associated with the exact tag.
+
+The two-build gate must report `raw=10/10 release=21/21`. Retain its
+`reproducibility.txt` output with the workflow evidence; do not infer a hosted
+or native run from local evidence.
 
 Recompute every archive hash independently and compare it with the manifest.
 Parse every SBOM as JSON and confirm its subject matches the corresponding

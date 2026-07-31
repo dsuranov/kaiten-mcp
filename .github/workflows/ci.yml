@@ -213,3 +213,46 @@ jobs:
           path: dist/${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 7
+
+  reproducibility:
+    name: Reproducible release snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full source history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.5"
+          check-latest: false
+          cache: true
+
+      - name: Verify selected Go toolchain
+        run: ./scripts/verify-go-toolchain.sh
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          syft-version: v1.50.0
+
+      - name: Install pinned GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          install-only: true
+
+      - name: Build two independent snapshots
+        shell: bash
+        run: ./scripts/verify-reproducible-release.sh --snapshot
+
+      - name: Upload reproducibility evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reproducibility
+          path: dist/reproducibility.txt
+          if-no-files-found: error
+          retention-days: 14

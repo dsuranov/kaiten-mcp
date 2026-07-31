@@ -6,6 +6,7 @@ project_name: kaiten-mcp
 before:
   hooks:
     - ./scripts/verify-go-toolchain.sh
+    - ./scripts/verify-release-environment.sh
     - go mod verify
     - go test ./...
 
@@ -21,15 +22,15 @@ builds:
       - >-
         -s -w
         -X github.com/dsuranov/kaiten-mcp/internal/version.Version={{ .Version }}
-        -X github.com/dsuranov/kaiten-mcp/internal/version.Commit={{ .FullCommit }}
-        -X github.com/dsuranov/kaiten-mcp/internal/version.Date={{ .CommitDate }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Commit={{ .Env.KAITEN_RELEASE_COMMIT }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Date={{ .Env.KAITEN_RELEASE_COMMIT_DATE }}
     targets:
       - darwin_amd64
       - darwin_arm64
       - linux_amd64
       - linux_arm64
       - windows_amd64
-    mod_timestamp: "{{ .CommitTimestamp }}"
+    mod_timestamp: "{{ .Env.KAITEN_RELEASE_EPOCH }}"
 
   - id: kaiten-mcp
     main: ./cmd/kaiten-mcp
@@ -42,15 +43,15 @@ builds:
       - >-
         -s -w
         -X github.com/dsuranov/kaiten-mcp/internal/version.Version={{ .Version }}
-        -X github.com/dsuranov/kaiten-mcp/internal/version.Commit={{ .FullCommit }}
-        -X github.com/dsuranov/kaiten-mcp/internal/version.Date={{ .CommitDate }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Commit={{ .Env.KAITEN_RELEASE_COMMIT }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Date={{ .Env.KAITEN_RELEASE_COMMIT_DATE }}
     targets:
       - darwin_amd64
       - darwin_arm64
       - linux_amd64
       - linux_arm64
       - windows_amd64
-    mod_timestamp: "{{ .CommitTimestamp }}"
+    mod_timestamp: "{{ .Env.KAITEN_RELEASE_EPOCH }}"
 
 archives:
   - id: kaiten
@@ -65,13 +66,28 @@ archives:
         formats:
           - zip
     wrap_in_directory: true
+    builds_info: &release_binary_info
+      owner: root
+      group: root
+      mode: 0755
+      mtime: "{{ .Env.KAITEN_RELEASE_COMMIT_DATE }}"
     files:
-      - LICENSE
-      - NOTICE
-      - THIRD_PARTY_NOTICES.md
-      - README.md
-      - PROVENANCE.md
-      - docs/*.md
+      - src: LICENSE
+        info: &release_file_info
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .Env.KAITEN_RELEASE_COMMIT_DATE }}"
+      - src: NOTICE
+        info: *release_file_info
+      - src: THIRD_PARTY_NOTICES.md
+        info: *release_file_info
+      - src: README.md
+        info: *release_file_info
+      - src: PROVENANCE.md
+        info: *release_file_info
+      - src: docs/*.md
+        info: *release_file_info
 
   - id: kaiten-mcp
     ids:
@@ -84,17 +100,39 @@ archives:
         formats:
           - zip
     wrap_in_directory: true
+    builds_info: *release_binary_info
     files:
-      - LICENSE
-      - NOTICE
-      - THIRD_PARTY_NOTICES.md
-      - README.md
-      - PROVENANCE.md
-      - docs/*.md
+      - src: LICENSE
+        info: *release_file_info
+      - src: NOTICE
+        info: *release_file_info
+      - src: THIRD_PARTY_NOTICES.md
+        info: *release_file_info
+      - src: README.md
+        info: *release_file_info
+      - src: PROVENANCE.md
+        info: *release_file_info
+      - src: docs/*.md
+        info: *release_file_info
 
 sboms:
   - id: archives
     artifacts: archive
+    cmd: ../scripts/generate-reproducible-sbom.sh
+    args:
+      - "$artifact"
+      - "$document"
+    env:
+      - "TMPDIR={{ .Env.TMPDIR }}"
+      - "SYFT_BIN={{ .Env.SYFT_BIN }}"
+      - "KAITEN_SPDX_NORMALIZER={{ .Env.KAITEN_SPDX_NORMALIZER }}"
+      - "KAITEN_RELEASE_COMMIT_DATE={{ .Env.KAITEN_RELEASE_COMMIT_DATE }}"
+      - "SYFT_CHECK_FOR_APP_UPDATE=false"
+      - "SYFT_FILE_METADATA_CATALOGER_ENABLED=true"
+      - "SYFT_ENRICH="
+      - "SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES=false"
+      - "SYFT_GOLANG_SEARCH_LOCAL_VENDOR_LICENSES=false"
+      - "SYFT_GOLANG_SEARCH_REMOTE_LICENSES=false"
 
 checksum:
   name_template: checksums.txt
