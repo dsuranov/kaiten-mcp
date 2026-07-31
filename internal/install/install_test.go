@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -117,7 +120,7 @@ func newTestEngine(t *testing.T, goos string, health healthChecker) *Engine {
 func TestPlatformLayoutsAndDefinitionsArePerUserAndLoopback(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux", "windows"} {
 		t.Run(goos, func(t *testing.T) {
-			home := filepath.Join(string(filepath.Separator), "users", "sample")
+			home := t.TempDir()
 			layout, err := layoutFor(goos, home)
 			if err != nil {
 				t.Fatal(err)
@@ -155,7 +158,7 @@ func TestInstallCycleInTemporaryProfiles(t *testing.T) {
 				t.Fatalf("environment mismatch: %q err=%v", environment, err)
 			}
 			info, _ := os.Stat(layout.Environment)
-			if info.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 				t.Fatalf("secret mode is %o", info.Mode().Perm())
 			}
 			definition, _ := os.ReadFile(layout.ServiceDefinition)
@@ -279,7 +282,16 @@ func TestHealthyUpdateStopsOldAndStartsNewVersionOnEveryPlatform(t *testing.T) {
 				t.Fatalf("readiness did not prove the new version: %v", health.versions)
 			}
 			definition, _ := os.ReadFile(layout.ServiceDefinition)
-			if !strings.Contains(string(definition), layout.Binary) {
+			binaryReference := layout.Binary
+			switch goos {
+			case "darwin":
+				binaryReference = html.EscapeString(layout.Binary)
+			case "linux":
+				binaryReference = strconv.Quote(layout.Binary)
+			case "windows":
+				binaryReference = windowsQuote(layout.Binary)
+			}
+			if !strings.Contains(string(definition), binaryReference) {
 				t.Fatalf("service definition does not execute installed binary: %s", definition)
 			}
 		})
@@ -468,11 +480,11 @@ func TestClientConfigMergePreservesUnrelatedSettingsAndBacksUp(t *testing.T) {
 		t.Fatalf("backup missing: %v", err)
 	}
 	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("client config mode is %o", info.Mode().Perm())
 	}
 	backupInfo, _ := os.Stat(path + ".bak")
-	if backupInfo.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && backupInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("client config backup mode is %o", backupInfo.Mode().Perm())
 	}
 }
@@ -491,7 +503,7 @@ func TestSecretReplacementRestrictsCurrentBackupAndRollback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat secret file %s: %v", candidate, err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("secret file %s mode=%o", candidate, info.Mode().Perm())
 		}
 	}
@@ -500,7 +512,7 @@ func TestSecretReplacementRestrictsCurrentBackupAndRollback(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	info, _ := os.Stat(path)
-	if string(data) != "TOKEN=old-secret\n" || info.Mode().Perm() != 0o600 {
+	if string(data) != "TOKEN=old-secret\n" || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("rollback did not restore and restrict prior secret: %q mode=%o", data, info.Mode().Perm())
 	}
 }
