@@ -1,0 +1,113 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.17.1/www/docs/static/schema.json
+version: 2
+
+project_name: kaiten-mcp
+
+before:
+  hooks:
+    - go mod verify
+    - go test ./...
+
+builds:
+  - id: kaiten
+    main: ./cmd/kaiten
+    binary: kaiten
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Version={{ .Version }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Commit={{ .FullCommit }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Date={{ .CommitDate }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: kaiten-mcp
+    main: ./cmd/kaiten-mcp
+    binary: kaiten-mcp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Version={{ .Version }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Commit={{ .FullCommit }}
+        -X github.com/dsuranov/kaiten-mcp/internal/version.Date={{ .CommitDate }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: kaiten
+    ids:
+      - kaiten
+      - kaiten-mcp
+    name_template: "kaiten_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - NOTICE
+      - THIRD_PARTY_NOTICES.md
+      - README.md
+      - docs/*.md
+
+  - id: kaiten-mcp
+    ids:
+      - kaiten-mcp
+    name_template: "kaiten-mcp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - NOTICE
+      - THIRD_PARTY_NOTICES.md
+      - README.md
+      - docs/*.md
+
+sboms:
+  - id: archives
+    artifacts: archive
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: true
+  prerelease: auto
+
+report_sizes: true
