@@ -1,7 +1,7 @@
 //go:build ignore
 
-// Command verify-native-lifecycle-evidence validates the downloaded five-runner
-// artifact set before it is admitted to a release audit package.
+// Command verify-native-lifecycle-evidence validates a reviewed downloaded
+// native artifact set before it is admitted to a release audit package.
 package main
 
 import (
@@ -34,6 +34,9 @@ const (
 	v3ActivationFailure       = "error: installation failed: activate service: exit status 1"
 	rollbackTriggerHealth     = "health-timeout"
 	rollbackTriggerActivation = "activation-failure"
+	evidenceScopeAll          = "all"
+	evidenceScopeMacOS        = "macos"
+	verifierUsage             = "usage: go run ./scripts/verify-native-lifecycle-evidence.go <download-directory> <40-character-commit>\n   or: go run ./scripts/verify-native-lifecycle-evidence.go --scope <all|macos> <download-directory> <40-character-commit>"
 )
 
 type target struct {
@@ -49,6 +52,8 @@ var reviewedTargets = []target{
 	{directory: "native-lifecycle-linux-arm64", runnerID: "linux-arm64", runnerLabel: "ubuntu-24.04-arm", goos: "linux", goarch: "arm64", runnerOS: "Linux", manager: "systemd --user over DBus", identity: serviceUnit},
 	{directory: "native-lifecycle-windows-amd64", runnerID: "windows-amd64", runnerLabel: "windows-latest", goos: "windows", goarch: "amd64", runnerOS: "Windows", manager: "Windows Startup", identity: "kaiten-mcp.cmd"},
 }
+
+var reviewedMacOSTargets = append([]target(nil), reviewedTargets[:2]...)
 
 var (
 	lowerSHA256    = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -185,17 +190,39 @@ type artifactDirectory struct {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		fail("usage: go run ./scripts/verify-native-lifecycle-evidence.go <download-directory> <40-character-commit>")
-	}
-	identity, err := validateBundle(os.Args[1], strings.TrimSpace(os.Args[2]))
+	scope, root, commit, err := parseVerifierArguments(os.Args[1:])
 	if err != nil {
 		fail("%v", err)
 	}
-	fmt.Printf("verified 5 native lifecycle artifacts: commit=%s workflow_run_id=%s attempt=%d\n", strings.TrimSpace(os.Args[2]), identity.workflowRunID, identity.workflowRunAttempt)
+	targets, err := reviewedTargetsForScope(scope)
+	if err != nil {
+		fail("%v", err)
+	}
+	commit = strings.TrimSpace(commit)
+	identity, err := validateBundleForTargets(root, commit, targets)
+	if err != nil {
+		fail("%v", err)
+	}
+	if scope == evidenceScopeAll {
+		fmt.Printf("verified 5 native lifecycle artifacts: commit=%s workflow_run_id=%s attempt=%d\n", commit, identity.workflowRunID, identity.workflowRunAttempt)
+		return
+	}
+	fmt.Printf("verified %d native lifecycle artifacts for %s scope: commit=%s workflow_run_id=%s attempt=%d\n", len(targets), scope, commit, identity.workflowRunID, identity.workflowRunAttempt)
 }
 
 func validateBundle(rootInput, commit string) (bundleIdentity, error) {
+	return validateBundleForTargets(rootInput, commit, reviewedTargets)
+}
+
+func validateBundleForScope(rootInput, commit, scope string) (bundleIdentity, error) {
+	targets, err := reviewedTargetsForScope(scope)
+	if err != nil {
+		return bundleIdentity{}, err
+	}
+	return validateBundleForTargets(rootInput, commit, targets)
+}
+
+func validateBundleForTargets(rootInput, commit string, targets []target) (bundleIdentity, error) {
 	var common bundleIdentity
 	if !lowerGitSHA.MatchString(commit) {
 		return common, errors.New("expected commit must be a lowercase 40-character Git SHA")
@@ -216,8 +243,8 @@ func validateBundle(rootInput, commit string) (bundleIdentity, error) {
 	if err != nil {
 		return common, err
 	}
-	wanted := make(map[string]target, len(reviewedTargets))
-	for _, reviewed := range reviewedTargets {
+	wanted := make(map[string]target, len(targets))
+	for _, reviewed := range targets {
 		wanted[reviewed.directory] = reviewed
 	}
 	if len(entries) != len(wanted) {
@@ -261,6 +288,38 @@ func validateBundle(rootInput, commit string) (bundleIdentity, error) {
 		}
 	}
 	return common, nil
+}
+
+func parseVerifierArguments(arguments []string) (scope, root, commit string, err error) {
+	switch {
+	case len(arguments) == 2:
+		return evidenceScopeAll, arguments[0], arguments[1], nil
+	case len(arguments) == 4 && arguments[0] == "--scope":
+		if arguments[1] != evidenceScopeAll && arguments[1] != evidenceScopeMacOS {
+			return "", "", "", fmt.Errorf("unknown evidence scope %q; supported scopes are %q and %q", arguments[1], evidenceScopeAll, evidenceScopeMacOS)
+		}
+		return arguments[1], arguments[2], arguments[3], nil
+	default:
+		return "", "", "", errors.New(verifierUsage)
+	}
+}
+
+func reviewedTargetsForScope(scope string) ([]target, error) {
+	var targets []target
+	switch scope {
+	case evidenceScopeAll:
+		targets = reviewedTargets
+	case evidenceScopeMacOS:
+		if len(reviewedMacOSTargets) != 2 ||
+			reviewedMacOSTargets[0].directory != "native-lifecycle-macos-amd64" || reviewedMacOSTargets[0].goos != "darwin" || reviewedMacOSTargets[0].goarch != "amd64" ||
+			reviewedMacOSTargets[1].directory != "native-lifecycle-macos-arm64" || reviewedMacOSTargets[1].goos != "darwin" || reviewedMacOSTargets[1].goarch != "arm64" {
+			return nil, errors.New("reviewed macOS target set is not the exact amd64 and arm64 pair")
+		}
+		targets = reviewedMacOSTargets
+	default:
+		return nil, fmt.Errorf("unknown evidence scope %q", scope)
+	}
+	return append([]target(nil), targets...), nil
 }
 
 func loadArtifactDirectory(path string, reviewed target) (artifactDirectory, error) {

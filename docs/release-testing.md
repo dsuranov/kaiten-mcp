@@ -146,6 +146,23 @@ artifact used for a stable claim must refer to the frozen candidate commit. A
 full all-platform graduation decision requires all five artifacts. The
 existence of the workflow is not execution evidence.
 
+The workflow itself still dispatches all five hosted matrix jobs. For the
+current macOS-stable gate, download exactly the two macOS artifacts and run the
+scoped verifier:
+
+```sh
+gh run watch <native-run-id>
+gh run download <native-run-id> --pattern 'native-lifecycle-macos-*' \
+  --dir native-evidence-macos
+go run ./scripts/verify-native-lifecycle-evidence.go --scope macos \
+  native-evidence-macos <40-character-commit>
+```
+
+This scope applies the full evidence and common-identity validation to exactly
+macOS amd64 and arm64, rejects missing or extra root entries, and certifies only
+macOS. It does not certify the Linux or Windows jobs. Omit `--scope macos` and
+download `native-lifecycle-*` to retain the exact five-target aggregate gate.
+
 | Operating system | Tier | Minimum native evidence |
 | --- | --- | --- |
 | macOS | Stable | Full cycle plus launch smoke on amd64 and arm64. |

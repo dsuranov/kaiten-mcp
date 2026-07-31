@@ -19,12 +19,111 @@ var aggregateTestCommit = strings.Repeat("a", 40)
 
 func TestRealisticFiveDirectoryBundlePassesAggregateChecks(t *testing.T) {
 	root := writeValidBundle(t)
-	identity, err := validateBundle(root, aggregateTestCommit)
+	scope, parsedRoot, parsedCommit, err := parseVerifierArguments([]string{root, aggregateTestCommit})
+	if err != nil {
+		t.Fatalf("default two-positional arguments failed: %v", err)
+	}
+	targets, err := reviewedTargetsForScope(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope != evidenceScopeAll || parsedRoot != root || parsedCommit != aggregateTestCommit || len(targets) != 5 {
+		t.Fatalf("default mode did not select all five targets: scope=%q root=%q commit=%q targets=%d", scope, parsedRoot, parsedCommit, len(targets))
+	}
+	explicitScope, explicitRoot, explicitCommit, err := parseVerifierArguments([]string{"--scope", evidenceScopeAll, root, aggregateTestCommit})
+	if err != nil || explicitScope != evidenceScopeAll || explicitRoot != root || explicitCommit != aggregateTestCommit {
+		t.Fatalf("explicit all scope did not preserve the aggregate mode: scope=%q root=%q commit=%q err=%v", explicitScope, explicitRoot, explicitCommit, err)
+	}
+	identity, err := validateBundleForScope(parsedRoot, parsedCommit, scope)
 	if err != nil {
 		t.Fatalf("valid five-directory evidence bundle failed: %v", err)
 	}
 	if identity.workflowRunID != "456" || identity.workflowRunAttempt != 2 || identity.releaseCommon == "" {
 		t.Fatalf("unexpected aggregate identity: %+v", identity)
+	}
+}
+
+func TestMacOSScopeAcceptsExactTwoDirectoryBundle(t *testing.T) {
+	root := writeValidMacOSBundle(t)
+	scope, parsedRoot, parsedCommit, err := parseVerifierArguments([]string{"--scope", evidenceScopeMacOS, root, aggregateTestCommit})
+	if err != nil {
+		t.Fatalf("macOS scoped arguments failed: %v", err)
+	}
+	identity, err := validateBundleForScope(parsedRoot, parsedCommit, scope)
+	if err != nil {
+		t.Fatalf("valid two-directory macOS evidence bundle failed: %v", err)
+	}
+	if identity.workflowRunID != "456" || identity.workflowRunAttempt != 2 || identity.releaseCommon == "" {
+		t.Fatalf("unexpected scoped identity: %+v", identity)
+	}
+}
+
+func TestMacOSScopeRejectsMissingArchitecture(t *testing.T) {
+	root := writeValidMacOSBundle(t)
+	missing := filepath.Join(root, reviewedMacOSTargets[1].directory)
+	if err := os.RemoveAll(missing); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateBundleForScope(root, aggregateTestCommit, evidenceScopeMacOS); err == nil {
+		t.Fatal("macOS scope accepted evidence without both architectures")
+	}
+}
+
+func TestMacOSScopeRejectsExtraTargetOrRootEntry(t *testing.T) {
+	t.Run("extra target", func(t *testing.T) {
+		root := writeValidMacOSBundle(t)
+		writeValidArtifactDirectory(t, root, reviewedTargets[2], 2)
+		if _, err := validateBundleForScope(root, aggregateTestCommit, evidenceScopeMacOS); err == nil {
+			t.Fatal("macOS scope accepted an extra non-macOS target")
+		}
+	})
+	t.Run("extra root entry", func(t *testing.T) {
+		root := writeValidMacOSBundle(t)
+		writeTestText(t, filepath.Join(root, "unreviewed.txt"), "stale evidence\n")
+		if _, err := validateBundleForScope(root, aggregateTestCommit, evidenceScopeMacOS); err == nil {
+			t.Fatal("macOS scope accepted an extra root entry")
+		}
+	})
+}
+
+func TestMacOSScopeRejectsMixedNativeIdentity(t *testing.T) {
+	root := writeValidMacOSBundle(t)
+	reviewed := reviewedMacOSTargets[1]
+	summaryPath := filepath.Join(root, reviewed.directory, "summary.json")
+	var summary summaryRecord
+	readTestJSON(t, summaryPath, &summary)
+	summary.WorkflowRunID = "457"
+	writeTestJSON(t, summaryPath, summary)
+	wrapperPath := filepath.Join(root, reviewed.directory, "wrapper-context.txt")
+	wrapper, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestText(t, wrapperPath, strings.Replace(string(wrapper), "workflow_run_id=456\n", "workflow_run_id=457\n", 1))
+	if _, err := validateBundleForScope(root, aggregateTestCommit, evidenceScopeMacOS); err == nil || !strings.Contains(err.Error(), "native evidence mixes workflow runs, attempts, or release bindings") {
+		t.Fatalf("macOS scope did not reject the aggregate native identity mismatch: %v", err)
+	}
+}
+
+func TestMacOSScopeRejectsMixedReleaseBinding(t *testing.T) {
+	root := writeValidMacOSBundle(t)
+	wrapperPath := filepath.Join(root, reviewedMacOSTargets[1].directory, "wrapper-context.txt")
+	wrapper, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestText(t, wrapperPath, strings.Replace(string(wrapper), "binding_release_artifact_id=789\n", "binding_release_artifact_id=790\n", 1))
+	if _, err := validateBundleForScope(root, aggregateTestCommit, evidenceScopeMacOS); err == nil || !strings.Contains(err.Error(), "native evidence mixes workflow runs, attempts, or release bindings") {
+		t.Fatalf("macOS scope did not reject the aggregate release binding mismatch: %v", err)
+	}
+}
+
+func TestVerifierRejectsUnknownScope(t *testing.T) {
+	if _, _, _, err := parseVerifierArguments([]string{"--scope", "linux", "evidence", aggregateTestCommit}); err == nil {
+		t.Fatal("CLI accepted an unknown evidence scope")
+	}
+	if _, err := validateBundleForScope(t.TempDir(), aggregateTestCommit, "linux"); err == nil {
+		t.Fatal("scoped verifier accepted an unknown evidence scope")
 	}
 }
 
@@ -328,8 +427,18 @@ func TestStrictJSONRejectsUnknownTrailingAndDuplicateFields(t *testing.T) {
 
 func writeValidBundle(t *testing.T) string {
 	t.Helper()
+	return writeValidBundleForTargets(t, reviewedTargets)
+}
+
+func writeValidMacOSBundle(t *testing.T) string {
+	t.Helper()
+	return writeValidBundleForTargets(t, reviewedMacOSTargets)
+}
+
+func writeValidBundleForTargets(t *testing.T, targets []target) string {
+	t.Helper()
 	root := t.TempDir()
-	for index, reviewed := range reviewedTargets {
+	for index, reviewed := range targets {
 		writeValidArtifactDirectory(t, root, reviewed, index)
 	}
 	return root

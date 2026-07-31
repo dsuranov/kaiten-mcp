@@ -115,6 +115,26 @@ go run ./scripts/verify-native-lifecycle-evidence.go native-evidence <40-charact
   | tee native-evidence-verification.txt
 ```
 
+The workflow still dispatches all five hosted matrix jobs. For a macOS-stable
+decision, download only the two macOS artifacts from that completed run and use
+the fail-closed macOS scope:
+
+```sh
+gh run watch "$native_run_id"
+gh run download "$native_run_id" --pattern 'native-lifecycle-macos-*' \
+  --dir native-evidence-macos
+go run ./scripts/verify-native-lifecycle-evidence.go --scope macos \
+  native-evidence-macos <40-character-commit> \
+  | tee native-evidence-macos-verification.txt
+```
+
+The scoped verifier requires exactly the reviewed amd64 and arm64 macOS
+directories, with no other root entries, and applies the same complete semantic
+and common-identity checks as the five-target mode. It certifies only macOS; it
+does not certify the Linux or Windows jobs from the workflow run. The scoped
+path waits for the run to finish without treating an expected beta-job failure
+as macOS evidence; the strict verifier decides the macOS result.
+
 `<reviewed-workflow-ref>` must be the exact Release tag, not a branch. A failed
 or rerun Release workflow is not eligible because the artifact REST record does
 not attest which rerun attempt produced it; create a new candidate instead.
@@ -142,9 +162,9 @@ token and signed artifact URL are never written to evidence.
 Match all five passing summaries to the frozen commit and GitHub run before
 qualifying all five targets as stable. A macOS-stable release requires both
 macOS summaries plus the release-specific local acceptance record; Linux and
-Windows remain beta until the aggregate all-target gate passes. The aggregate
-verifier requires one exact artifact set per runner, one workflow run/attempt,
-Go 1.26.5, complete companion evidence,
+Windows remain beta until the aggregate all-target gate passes. Both verifier
+modes require one exact artifact set per selected runner, one workflow
+run/attempt, Go 1.26.5, complete companion evidence,
 the reviewed version transitions, and no synthetic token, authorization header,
 or mock tenant body. It also binds the API artifact digest, manifest/archive
 hashes, and both helper-recorded binary hashes to the hashes independently
