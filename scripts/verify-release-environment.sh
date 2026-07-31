@@ -29,6 +29,10 @@ if [[ -z "${KAITEN_SPDX_NORMALIZER:-}" || ! -x "$KAITEN_SPDX_NORMALIZER" ]]; the
   echo "error: KAITEN_SPDX_NORMALIZER must name the prepared executable" >&2
   exit 1
 fi
+if [[ -z "${KAITEN_ARCHIVE_CANONICALIZER:-}" || ! -x "$KAITEN_ARCHIVE_CANONICALIZER" ]]; then
+  echo "error: KAITEN_ARCHIVE_CANONICALIZER must name the prepared executable" >&2
+  exit 1
+fi
 if [[ -z "${SYFT_BIN:-}" || ! -x "$SYFT_BIN" ]]; then
   echo "error: SYFT_BIN must name the verified Syft executable" >&2
   exit 1

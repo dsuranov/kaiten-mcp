@@ -10,6 +10,7 @@ artifact="$1"
 document="$2"
 : "${TMPDIR:?TMPDIR is required}"
 : "${SYFT_BIN:?SYFT_BIN is required}"
+: "${KAITEN_ARCHIVE_CANONICALIZER:?KAITEN_ARCHIVE_CANONICALIZER is required}"
 : "${KAITEN_SPDX_NORMALIZER:?KAITEN_SPDX_NORMALIZER is required}"
 : "${KAITEN_RELEASE_COMMIT_DATE:?KAITEN_RELEASE_COMMIT_DATE is required}"
 
@@ -19,6 +20,10 @@ cleanup() {
   rm -f -- "$raw_document" "$converted_document"
 }
 trap cleanup EXIT
+
+"$KAITEN_ARCHIVE_CANONICALIZER" \
+  -archive "$artifact" \
+  -modified "$KAITEN_RELEASE_COMMIT_DATE"
 
 "$SYFT_BIN" scan "file:$artifact" \
   --quiet \

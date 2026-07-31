@@ -25,12 +25,14 @@ export SYFT_BIN="$syft_bin"
 export KAITEN_RELEASE_COMMIT="$(git rev-parse HEAD)"
 export KAITEN_RELEASE_EPOCH="$(git show -s --format=%ct HEAD)"
 export KAITEN_RELEASE_COMMIT_DATE="$(git show -s --format=%cI HEAD)"
+export KAITEN_ARCHIVE_CANONICALIZER="$repo_root/bin/tmp/release-tools/canonicalize-archive"
 export KAITEN_SPDX_NORMALIZER="$repo_root/bin/tmp/release-tools/normalize-spdx"
 export SYFT_CHECK_FOR_APP_UPDATE=false
 export SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES=false
 export SYFT_GOLANG_SEARCH_LOCAL_VENDOR_LICENSES=false
 export SYFT_GOLANG_SEARCH_REMOTE_LICENSES=false
 
+go build -trimpath -o "$KAITEN_ARCHIVE_CANONICALIZER" ./internal/release/cmd/canonicalize-archive
 go build -trimpath -o "$KAITEN_SPDX_NORMALIZER" ./internal/release/cmd/normalize-spdx
 ./scripts/verify-release-environment.sh
 

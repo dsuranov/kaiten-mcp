@@ -25,8 +25,10 @@ the draft-release job.
   full commit, commit date, and output mtime come from the exact Git commit.
 - Every archive member has an explicit commit-derived mtime, `root` owner and
   group for TAR, and a fixed `0644` or `0755` mode. GoReleaser sorts configured
-  files and emits stable gzip/ZIP metadata. Source checkout owners and mtimes
-  are not trusted.
+  files; a small host-side canonicalizer then preserves all regular-file
+  payloads while sorting every member, rejecting links or unsafe paths, and
+  emitting stable gzip/ZIP metadata. Source checkout owners, mtimes, and
+  parallel binary completion order are not trusted.
 - GoReleaser is exactly 2.17.1 and Syft is exactly 1.50.0. Runtime checks verify
   those versions instead of relying only on workflow text.
 - Syft scans only the completed archive. Mutable network enrichment and local
@@ -44,9 +46,10 @@ Syft's supported SPDX output and conversion behavior are documented by the
 ## SPDX normalization policy
 
 Syft 1.50.0 intentionally emits the wall-clock generation time and a random
-UUID namespace. The repository's custom GoReleaser SBOM command runs Syft
-first, then the small `spdxnormalize` helper before GoReleaser computes the
-manifest. It makes only these provenance-policy changes:
+UUID namespace. The repository's custom GoReleaser SBOM command first
+canonicalizes the completed archive, runs Syft against those final bytes, then
+runs the small `spdxnormalize` helper before GoReleaser computes the manifest.
+It makes only these provenance-policy changes:
 
 1. `creationInfo.created` becomes the source commit time in UTC;
 2. the existing Syft creators are preserved and

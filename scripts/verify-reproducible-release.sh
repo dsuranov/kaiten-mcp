@@ -28,6 +28,10 @@ export SYFT_BIN="${SYFT_BIN:-$(command -v syft || true)}"
 mkdir -p "$repo_root/bin/tmp"
 scratch="$(mktemp -d "$repo_root/bin/tmp/reproducible-release.XXXXXX")"
 cleanup() {
+  if [[ "${KEEP_REPRO_SCRATCH:-false}" == "true" ]]; then
+    printf 'preserved reproducibility scratch: %s\n' "$scratch" >&2
+    return
+  fi
   rm -rf -- "$scratch"
 }
 trap cleanup EXIT
@@ -97,8 +101,16 @@ while IFS= read -r relative; do
 done <"$scratch/run1.raw"
 
 while IFS= read -r relative; do
+  if [[ "$relative" == "./checksums.txt" ]]; then
+    continue
+  fi
   cmp "$scratch/run1/dist/$relative" "$scratch/run2/dist/$relative"
 done <"$scratch/run1.release"
+
+if ! cmp "$scratch/run1/dist/checksums.txt" "$scratch/run2/dist/checksums.txt"; then
+  diff -u "$scratch/run1/dist/checksums.txt" "$scratch/run2/dist/checksums.txt" >&2 || true
+  exit 1
+fi
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then

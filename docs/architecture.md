@@ -114,7 +114,7 @@ detector in CI.
 GoReleaser cross-builds both entry points with `CGO_ENABLED=0`, trimmed source
 paths, embedded version/commit/date values, and commit-derived timestamps.
 Archives contain user documentation and legal notices with fixed member
-metadata. Syft package evidence receives deterministic SPDX creation metadata
-before SHA-256 checksums are generated. Two independent builds must match byte
-for byte before a draft release is eligible for the native installer and
-provenance gates.
+metadata and canonical member order. Syft scans those final bytes, and its
+package evidence receives deterministic SPDX creation metadata before SHA-256
+checksums are generated. Two independent builds must match byte for byte before
+a draft release is eligible for the native installer and provenance gates.
