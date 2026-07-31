@@ -47,8 +47,10 @@ Implementation and documentation were limited to:
 - newly authored fake servers, fixtures, tests, and audit checks derived from
   the neutral contract.
 
-The Go standard library was independently selected as the only runtime module.
-GoReleaser and Syft are pinned release-time tools and are not runtime
+The Go standard library and the public `golang.org/x/term` module were
+independently selected for the runtime; `golang.org/x/sys` is its platform
+support dependency. The external module is used only for non-echoing terminal
+input. GoReleaser and Syft are pinned release-time tools and are not runtime
 dependencies.
 
 ## Excluded sources
@@ -68,7 +70,8 @@ on a previous implementation.
 
 The implementation team independently chose:
 
-- Go with a standard-library-only runtime;
+- Go with a small runtime dependency set and `golang.org/x/term` for hidden
+  interactive secret input;
 - two small executable entry points over shared internal packages;
 - explicit boundaries for configuration, REST transport, domain resolution,
   pagination, caching, CLI rendering, MCP protocol handling, and per-user

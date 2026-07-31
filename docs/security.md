@@ -77,11 +77,11 @@ checksums, and SPDX JSON SBOMs. The release workflow produces a draft and
 attests the checksum manifest. Verify the checksum before executing a download
 and review the SBOM when policy requires it.
 
-The runtime currently uses only the Go standard library. This reduces the
-dependency surface but does not remove risks from the toolchain, operating
-system, release workflow, or future dependencies. CI runs static analysis,
-tests, race detection, and cross-builds; release review must also reconcile
-dependency licenses and notices.
+The runtime uses the Go standard library plus `golang.org/x/term` for hidden
+terminal input and its `golang.org/x/sys` platform support dependency. Their
+versions and BSD 3-Clause notice are recorded in the module files, SBOMs, and
+`THIRD_PARTY_NOTICES.md`. CI runs static analysis, tests, race detection, and
+cross-builds; release review must reconcile dependency licenses and notices.
 
 ## Reporting a vulnerability
 

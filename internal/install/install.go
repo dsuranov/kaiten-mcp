@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 type commandRunner interface {
@@ -23,10 +25,23 @@ type commandRunner interface {
 }
 
 type healthChecker interface {
-	Wait(context.Context, string, time.Duration) error
+	Wait(context.Context, string, string, time.Duration) error
+}
+
+type binaryVersionReader interface {
+	ReadVersion(context.Context, string) (string, error)
+}
+
+type terminalAccess interface {
+	IsTerminal(int) bool
+	ReadPassword(int) ([]byte, error)
 }
 
 type execCommands struct{}
+
+type execBinaryVersion struct{}
+
+type nativeTerminal struct{}
 
 func (execCommands) Run(ctx context.Context, name string, arguments ...string) error {
 	command := exec.CommandContext(ctx, name, arguments...)
@@ -35,9 +50,27 @@ func (execCommands) Run(ctx context.Context, name string, arguments ...string) e
 	return command.Run()
 }
 
+func (execBinaryVersion) ReadVersion(ctx context.Context, path string) (string, error) {
+	command := exec.CommandContext(ctx, path, "version")
+	command.Stderr = io.Discard
+	output, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("run %s version: %w", filepath.Base(path), err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 || fields[0] != serviceName || strings.TrimSpace(fields[1]) == "" {
+		return "", fmt.Errorf("%s returned an unrecognized version response", filepath.Base(path))
+	}
+	return fields[1], nil
+}
+
+func (nativeTerminal) IsTerminal(fd int) bool { return term.IsTerminal(fd) }
+
+func (nativeTerminal) ReadPassword(fd int) ([]byte, error) { return term.ReadPassword(fd) }
+
 type httpReadiness struct{ client *http.Client }
 
-func (h httpReadiness) Wait(ctx context.Context, endpoint string, timeout time.Duration) error {
+func (h httpReadiness) Wait(ctx context.Context, endpoint, expectedVersion string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -46,7 +79,7 @@ func (h httpReadiness) Wait(ctx context.Context, endpoint string, timeout time.D
 			var body map[string]any
 			decodeErr := json.NewDecoder(response.Body).Decode(&body)
 			_ = response.Body.Close()
-			if response.StatusCode == http.StatusOK && decodeErr == nil && body["status"] == "ok" {
+			if response.StatusCode == http.StatusOK && decodeErr == nil && body["status"] == "ok" && body["version"] == expectedVersion {
 				return nil
 			}
 		}
@@ -71,6 +104,8 @@ type Engine struct {
 	Environment      map[string]string
 	Commands         commandRunner
 	Health           healthChecker
+	Versions         binaryVersionReader
+	Terminal         terminalAccess
 	ReadinessTimeout time.Duration
 }
 
@@ -99,7 +134,7 @@ func DefaultEngine() (*Engine, error) {
 	return &Engine{
 		GOOS: runtime.GOOS, Home: home, Executable: executable, UID: uid,
 		Environment: selectedEnvironment(), Commands: execCommands{},
-		Health: httpReadiness{client: &http.Client{Timeout: time.Second}}, ReadinessTimeout: 15 * time.Second,
+		Health: httpReadiness{client: &http.Client{Timeout: time.Second}}, Versions: execBinaryVersion{}, Terminal: nativeTerminal{}, ReadinessTimeout: 15 * time.Second,
 	}, nil
 }
 
@@ -152,12 +187,10 @@ func (e *Engine) Install(ctx context.Context, input io.Reader, output, diagnosti
 	}
 	token := firstValue(e.Environment["KAITEN_API_TOKEN"], e.Environment["KAITEN_TOKEN"], existingValues["KAITEN_API_TOKEN"])
 	if token == "" {
-		fmt.Fprint(output, "Kaiten API token: ")
-		token, err = reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
+		token, err = e.readToken(input, reader, output)
+		if err != nil {
 			return err
 		}
-		token = strings.TrimSpace(token)
 	} else {
 		fmt.Fprintln(output, "Using the configured API token (value hidden).")
 	}
@@ -180,16 +213,51 @@ func (e *Engine) Install(ctx context.Context, input io.Reader, output, diagnosti
 	if err != nil {
 		return fmt.Errorf("read installation executable: %w", err)
 	}
+	versions := e.Versions
+	if versions == nil {
+		versions = execBinaryVersion{}
+	}
+	newVersion, err := versions.ReadVersion(ctx, e.Executable)
+	if err != nil {
+		return fmt.Errorf("identify installation executable: %w", err)
+	}
+	oldVersion := ""
+	if fileExists(layout.Binary) {
+		if value, inspectErr := versions.ReadVersion(ctx, layout.Binary); inspectErr == nil {
+			oldVersion = value
+		} else {
+			fmt.Fprintf(diagnostics, "warning: previous service version could not be identified; rollback can still restore its files: %v\n", inspectErr)
+		}
+	}
+	oldStopped := false
+	if existing {
+		if err := e.deactivate(ctx, layout); err != nil {
+			return fmt.Errorf("stop existing service before replacement: %w", err)
+		}
+		oldStopped = true
+	}
 	transaction := &transaction{}
+	activationAttempted := false
 	rollback := func(cause error) error {
-		_ = e.deactivate(ctx, layout)
+		failures := []error{cause}
+		if activationAttempted {
+			if deactivateErr := e.deactivate(ctx, layout); deactivateErr != nil {
+				failures = append(failures, fmt.Errorf("stop failed replacement service: %w", deactivateErr))
+			}
+		}
 		if rollbackErr := transaction.rollback(); rollbackErr != nil {
-			return fmt.Errorf("%v; rollback incomplete: %w", cause, rollbackErr)
+			failures = append(failures, fmt.Errorf("restore previous files: %w", rollbackErr))
 		}
-		if existing {
-			_ = e.activate(ctx, layout)
+		if existing && oldStopped {
+			if activateErr := e.activate(ctx, layout); activateErr != nil {
+				failures = append(failures, fmt.Errorf("reactivate previous service: %w", activateErr))
+			} else if oldVersion != "" {
+				if readinessErr := e.Health.Wait(ctx, "http://127.0.0.1:8100/health", oldVersion, e.ReadinessTimeout); readinessErr != nil {
+					failures = append(failures, fmt.Errorf("verify reactivated previous service version %q: %w", oldVersion, readinessErr))
+				}
+			}
 		}
-		return cause
+		return errors.Join(failures...)
 	}
 	if err := transaction.replace(layout.Binary, executable, 0o700); err != nil {
 		return rollback(err)
@@ -203,11 +271,12 @@ func (e *Engine) Install(ctx context.Context, input io.Reader, output, diagnosti
 	if err := os.MkdirAll(filepath.Dir(layout.Log), 0o700); err != nil {
 		return rollback(err)
 	}
+	activationAttempted = true
 	if err := e.activate(ctx, layout); err != nil {
 		return rollback(fmt.Errorf("activate service: %w", err))
 	}
-	if err := e.Health.Wait(ctx, "http://127.0.0.1:8100/health", e.ReadinessTimeout); err != nil {
-		return rollback(err)
+	if err := e.Health.Wait(ctx, "http://127.0.0.1:8100/health", newVersion, e.ReadinessTimeout); err != nil {
+		return rollback(fmt.Errorf("verify installed service version %q: %w", newVersion, err))
 	}
 	if registerClients {
 		for _, path := range []string{layout.ClaudeCodeConfig, layout.ClaudeDesktopConfig} {
@@ -239,7 +308,7 @@ func (e *Engine) Uninstall(ctx context.Context, input io.Reader, output, diagnos
 	}
 	deferWindowsSelfRemoval := e.GOOS == "windows" && samePath(e.Executable, layout.Binary)
 	for _, path := range []string{layout.Binary, layout.Environment, layout.ServiceDefinition} {
-		for _, candidate := range []string{path, path + ".bak"} {
+		for _, candidate := range []string{path, path + ".bak", path + ".replace-old"} {
 			if candidate == layout.Binary && deferWindowsSelfRemoval {
 				continue
 			}
@@ -252,6 +321,7 @@ func (e *Engine) Uninstall(ctx context.Context, input io.Reader, output, diagnos
 		for _, path := range []string{layout.ClaudeCodeConfig, layout.ClaudeDesktopConfig} {
 			if err := mergeClientConfig(path, "", true); err != nil && !errors.Is(err, os.ErrNotExist) {
 				fmt.Fprintf(diagnostics, "warning: client configuration %s was not updated: %v\n", path, err)
+				failures = append(failures, fmt.Errorf("remove kaiten from client configuration %s: %w", path, err))
 			}
 		}
 	}
@@ -349,6 +419,33 @@ func prompt(reader *bufio.Reader, output io.Writer, label, fallback string) (str
 	return value, nil
 }
 
+type fileDescriptor interface{ Fd() uintptr }
+
+func (e *Engine) readToken(input io.Reader, reader *bufio.Reader, output io.Writer) (string, error) {
+	terminal := e.Terminal
+	if terminal == nil {
+		terminal = nativeTerminal{}
+	}
+	if source, ok := input.(fileDescriptor); ok {
+		fd := int(source.Fd())
+		if terminal.IsTerminal(fd) {
+			fmt.Fprint(output, "Kaiten API token (input hidden): ")
+			secret, err := terminal.ReadPassword(fd)
+			fmt.Fprintln(output)
+			if err != nil {
+				return "", fmt.Errorf("read hidden API token: %w", err)
+			}
+			return strings.TrimSpace(string(secret)), nil
+		}
+	}
+	fmt.Fprint(output, "Kaiten API token: ")
+	value, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+
 func validateTenant(raw string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil || !parsed.IsAbs() || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -356,6 +453,9 @@ func validateTenant(raw string) (string, error) {
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("tenant URL must not contain credentials, query, or fragment")
+	}
+	if strings.Trim(parsed.Path, "/") != "" {
+		return "", errors.New("tenant URL must be a tenant origin without a path")
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	return parsed.String(), nil

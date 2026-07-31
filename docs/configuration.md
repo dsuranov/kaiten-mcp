@@ -84,6 +84,7 @@ store or service-secret mechanism for a long-running installation.
 ## Installed service configuration
 
 The interactive installer manages its own per-user configuration with narrow
-permissions and an atomic replacement strategy. Do not copy the token into a
-system-wide service definition. The installed service uses loopback port `8100`
-and path `/mcp`, independent of the direct HTTP defaults above.
+permissions for both the current secret file and its recoverable backup, plus
+an atomic replacement strategy. Do not copy the token into a system-wide
+service definition. The installed service uses loopback port `8100` and path
+`/mcp`, independent of the direct HTTP defaults above.

@@ -84,10 +84,13 @@ kaiten-mcp install
 
 The installer:
 
-1. validates the tenant URL and obtains a token without displaying it;
+1. validates the tenant URL and obtains a token without displaying it (terminal
+   echo is disabled for an interactive prompt; non-terminal automation reads
+   one deterministic line when no environment token is set);
 2. asks whether MCP write tools should be enabled; the default is read-only;
 3. installs a user-owned executable and user-level service definition;
-4. starts the service and waits for bounded health readiness;
+4. starts the service and waits for bounded health readiness from the exact
+   version being installed;
 5. optionally adds a server named `kaiten` to a supported MCP client while
    preserving unrelated configuration.
 
@@ -96,9 +99,12 @@ The installed endpoint is `http://127.0.0.1:8100/mcp`; health is available at
 location. A failed activation returns nonzero and retains or restores the prior
 working installation whenever possible.
 
-An existing installation offers update, reinstall, or cancel. Update must
-preserve a recoverable previous executable and configuration until health is
-confirmed.
+An existing installation offers update, reinstall, or cancel. Update stops the
+old service before replacing files, starts only the newly installed binary, and
+preserves a recoverable previous executable and configuration until the new
+version is confirmed. A failed write, activation, or readiness check restores
+and reactivates the previous files; any restoration or reactivation failure is
+included in the returned error.
 
 ## Uninstall
 

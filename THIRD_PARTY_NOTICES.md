@@ -1,12 +1,18 @@
 # Third-party notices
 
-The project currently declares no third-party Go modules. Release binaries are
-built with the Go toolchain and contain portions of the Go runtime and standard
-library. Those portions are distributed under the following license.
+Release binaries contain portions of the Go runtime and standard library and
+the following Go modules, selected for hidden terminal input:
 
-## Go runtime and standard library
+- `golang.org/x/term` v0.34.0 (direct dependency)
+- `golang.org/x/sys` v0.35.0 (transitive dependency)
 
-Copyright (c) 2009 The Go Authors. All rights reserved.
+All of these portions are distributed under the BSD 3-Clause license below.
+The two module versions are also recorded in `go.mod`, `go.sum`, and release
+SBOMs.
+
+## Go runtime, standard library, x/term, and x/sys
+
+Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -16,7 +22,7 @@ modification, are permitted provided that the following conditions are met:
 - Redistributions in binary form must reproduce the above copyright notice,
   this list of conditions and the following disclaimer in the documentation
   and/or other materials provided with the distribution.
-- Neither the name of Google Inc. nor the names of its contributors may be used
+- Neither the name of Google LLC nor the names of its contributors may be used
   to endorse or promote products derived from this software without specific
   prior written permission.
 
@@ -33,7 +39,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Release review requirement
 
-This file describes the current standard-library-only dependency state. Before
-each release, maintainers must compare it with `go list -m all`, the generated
-SBOMs, and any bundled assets, then add every newly applicable notice before
-publication.
+Before each release, maintainers must compare this file with `go list -m all`,
+the generated SBOMs, and any bundled assets, then add every newly applicable
+notice before publication.
