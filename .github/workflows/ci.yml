@@ -84,6 +84,7 @@ jobs:
           cache: true
 
       - name: Verify selected Go toolchain
+        shell: bash
         run: ./scripts/verify-go-toolchain.sh
 
       - name: Run unit and contract tests

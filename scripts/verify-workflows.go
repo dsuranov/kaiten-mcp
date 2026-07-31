@@ -25,16 +25,47 @@ type workflow struct {
 	raw            string
 }
 
-var actionUse = regexp.MustCompile(`^\s*(?:-\s*)?uses:\s*([^@\s]+)@([0-9a-f]{40})\s+#\s+(v[0-9][A-Za-z0-9._-]*)\s*$`)
+type workflowLine struct {
+	number   int
+	original string
+	trimmed  string
+	indent   int
+}
+
+type workflowJob struct {
+	name  string
+	lines []workflowLine
+}
+
+type workflowStep struct {
+	name      string
+	startLine int
+	lines     []workflowLine
+}
+
+var (
+	actionUse       = regexp.MustCompile(`^\s*(?:-\s*)?uses:\s*([^@\s]+)@([0-9a-f]{40})\s+#\s+(v[0-9][A-Za-z0-9._-]*)\s*$`)
+	matrixRunnerRef = regexp.MustCompile(`^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$`)
+)
 
 func main() {
-	paths, err := filepath.Glob(".github/workflows/*.yml")
-	check(err)
+	var paths []string
+	for _, pattern := range []string{".github/workflows/*.yml", ".github/workflows/*.yaml"} {
+		matches, err := filepath.Glob(pattern)
+		check(err)
+		paths = append(paths, matches...)
+	}
+	sort.Strings(paths)
 	if len(paths) == 0 {
 		fail("no GitHub Actions workflows found")
 	}
 	for _, path := range paths {
 		checkActionPins(path)
+		data, err := os.ReadFile(path)
+		check(err)
+		if violations := windowsShellViolations(string(data)); len(violations) != 0 {
+			fail("%s has Windows-reachable .sh steps without explicit shell: bash: %s", path, strings.Join(violations, "; "))
+		}
 	}
 
 	ci := parseWorkflow(".github/workflows/ci.yml")
@@ -194,6 +225,231 @@ func checkActionPins(path string) {
 	check(scanner.Err())
 	if uses == 0 {
 		fail("%s contains no external action", path)
+	}
+}
+
+func windowsShellViolations(raw string) []string {
+	var violations []string
+	for _, job := range parseWorkflowJobs(raw) {
+		if !jobCanRunOnWindows(job) {
+			continue
+		}
+		for _, step := range parseWorkflowSteps(job) {
+			if stepRunsShellScript(step) && !stepUsesBash(step) {
+				violations = append(violations, fmt.Sprintf("job %s step %q at line %d", job.name, step.name, step.startLine))
+			}
+		}
+	}
+	return violations
+}
+
+func parseWorkflowJobs(raw string) []workflowJob {
+	var jobs []workflowJob
+	current := -1
+	inJobs := false
+	for index, original := range strings.Split(raw, "\n") {
+		line := newWorkflowLine(index+1, original)
+		if line.trimmed == "" {
+			continue
+		}
+		if line.indent == 0 {
+			if line.trimmed == "jobs:" {
+				inJobs = true
+				current = -1
+				continue
+			}
+			if inJobs {
+				break
+			}
+		}
+		if !inJobs {
+			continue
+		}
+		if line.indent == 2 && strings.HasSuffix(line.trimmed, ":") {
+			jobs = append(jobs, workflowJob{name: strings.TrimSuffix(line.trimmed, ":")})
+			current = len(jobs) - 1
+			continue
+		}
+		if current >= 0 {
+			jobs[current].lines = append(jobs[current].lines, line)
+		}
+	}
+	return jobs
+}
+
+func parseWorkflowSteps(job workflowJob) []workflowStep {
+	var steps []workflowStep
+	current := -1
+	inSteps := false
+	for _, line := range job.lines {
+		if line.indent == 4 && line.trimmed == "steps:" {
+			inSteps = true
+			current = -1
+			continue
+		}
+		if !inSteps {
+			continue
+		}
+		if line.indent <= 4 {
+			break
+		}
+		if line.indent == 6 && strings.HasPrefix(line.trimmed, "- ") {
+			steps = append(steps, workflowStep{name: fmt.Sprintf("line %d", line.number), startLine: line.number})
+			current = len(steps) - 1
+		}
+		if current < 0 {
+			continue
+		}
+		steps[current].lines = append(steps[current].lines, line)
+		if key, value, ok := stepField(line); ok && key == "name" {
+			steps[current].name = value
+		}
+	}
+	return steps
+}
+
+func jobCanRunOnWindows(job workflowJob) bool {
+	for index, line := range job.lines {
+		if line.indent != 4 {
+			continue
+		}
+		key, value, ok := yamlField(line.trimmed)
+		if !ok || key != "runs-on" {
+			continue
+		}
+		if containsWindows(value) {
+			return true
+		}
+		if value == "" {
+			for _, continuation := range job.lines[index+1:] {
+				if continuation.indent <= line.indent {
+					break
+				}
+				if containsWindows(continuation.trimmed) {
+					return true
+				}
+			}
+			return false
+		}
+		unquoted := strings.Trim(value, `"'`)
+		if match := matrixRunnerRef.FindStringSubmatch(unquoted); match != nil {
+			return matrixIncludesWindows(job, match[1])
+		}
+		// Unknown expressions are treated as Windows-capable so a new dynamic
+		// runner source cannot silently bypass this policy.
+		return strings.Contains(unquoted, "${{")
+	}
+	return false
+}
+
+func matrixIncludesWindows(job workflowJob, runnerKey string) bool {
+	matrixIndent := -1
+	activeKeyIndent := -1
+	for _, line := range job.lines {
+		if matrixIndent < 0 {
+			if line.trimmed == "matrix:" {
+				matrixIndent = line.indent
+			}
+			continue
+		}
+		if line.indent <= matrixIndent {
+			break
+		}
+		if activeKeyIndent >= 0 {
+			if line.indent <= activeKeyIndent {
+				activeKeyIndent = -1
+			} else if containsWindows(line.trimmed) {
+				return true
+			}
+		}
+		candidate := strings.TrimPrefix(line.trimmed, "- ")
+		key, value, ok := yamlField(candidate)
+		if !ok || key != runnerKey {
+			continue
+		}
+		if containsWindows(value) {
+			return true
+		}
+		if value == "" {
+			activeKeyIndent = line.indent
+		}
+	}
+	return false
+}
+
+func stepRunsShellScript(step workflowStep) bool {
+	runBlockIndent := -1
+	for _, line := range step.lines {
+		if runBlockIndent >= 0 {
+			if line.indent > runBlockIndent {
+				if strings.Contains(strings.ToLower(line.original), ".sh") {
+					return true
+				}
+				continue
+			}
+			runBlockIndent = -1
+		}
+		key, value, ok := stepField(line)
+		if !ok || key != "run" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(line.original), ".sh") {
+			return true
+		}
+		if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+			runBlockIndent = line.indent
+		}
+	}
+	return false
+}
+
+func stepUsesBash(step workflowStep) bool {
+	for _, line := range step.lines {
+		key, value, ok := stepField(line)
+		if ok && key == "shell" && strings.Trim(value, `"'`) == "bash" {
+			return true
+		}
+	}
+	return false
+}
+
+func stepField(line workflowLine) (string, string, bool) {
+	if line.indent != 6 && line.indent != 8 {
+		return "", "", false
+	}
+	value := line.trimmed
+	if line.indent == 6 {
+		if !strings.HasPrefix(value, "- ") {
+			return "", "", false
+		}
+		value = strings.TrimPrefix(value, "- ")
+	}
+	return yamlField(value)
+}
+
+func yamlField(value string) (string, string, bool) {
+	key, fieldValue, ok := strings.Cut(value, ":")
+	if !ok {
+		return "", "", false
+	}
+	return strings.TrimSpace(key), strings.TrimSpace(fieldValue), true
+}
+
+func containsWindows(value string) bool {
+	return strings.Contains(strings.ToLower(value), "windows")
+}
+
+func newWorkflowLine(number int, original string) workflowLine {
+	structural := original
+	if index := strings.Index(structural, "#"); index >= 0 {
+		structural = structural[:index]
+	}
+	structural = strings.TrimRight(structural, " \t")
+	return workflowLine{
+		number:   number,
+		original: original,
+		trimmed:  strings.TrimSpace(structural),
+		indent:   leadingSpaces(structural),
 	}
 }
 

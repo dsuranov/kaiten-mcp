@@ -17,7 +17,7 @@ import (
 type module struct {
 	Path    string
 	Version string
-	Main    bool
+	Replace *module
 }
 
 func main() {
@@ -29,21 +29,8 @@ func main() {
 	command := exec.Command("go", "list", "-m", "-json", "all")
 	output, err := command.Output()
 	check(err)
-	decoder := json.NewDecoder(strings.NewReader(string(output)))
-	actual := make(map[string]string)
-	for {
-		var item module
-		if err := decoder.Decode(&item); err != nil {
-			if err == io.EOF {
-				break
-			}
-			check(err)
-		}
-		if _, duplicate := actual[item.Path]; duplicate {
-			fail("duplicate module %s", item.Path)
-		}
-		actual[item.Path] = item.Version
-	}
+	actual, err := decodeModules(strings.NewReader(string(output)))
+	check(err)
 	if !sameModules(actual, expected) {
 		fail("module graph = %v, reviewed graph = %v; update licenses, notices, provenance, and policy together", formatModules(actual), formatModules(expected))
 	}
@@ -67,12 +54,38 @@ func main() {
 	fmt.Printf("verified dependency policy: %s\n", strings.Join(formatModules(actual), ", "))
 }
 
+func decodeModules(reader io.Reader) (map[string]string, error) {
+	decoder := json.NewDecoder(reader)
+	actual := make(map[string]string)
+	for {
+		var item module
+		if err := decoder.Decode(&item); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		if item.Path == "" {
+			return nil, fmt.Errorf("module graph contains an empty module path")
+		}
+		if item.Replace != nil {
+			return nil, fmt.Errorf("module %s uses forbidden replacement %s", formatModule(item.Path, item.Version), formatModule(item.Replace.Path, item.Replace.Version))
+		}
+		if _, duplicate := actual[item.Path]; duplicate {
+			return nil, fmt.Errorf("duplicate module %s", item.Path)
+		}
+		actual[item.Path] = item.Version
+	}
+	return actual, nil
+}
+
 func sameModules(first, second map[string]string) bool {
 	if len(first) != len(second) {
 		return false
 	}
 	for path, version := range first {
-		if second[path] != version {
+		otherVersion, exists := second[path]
+		if !exists || otherVersion != version {
 			return false
 		}
 	}
@@ -89,6 +102,16 @@ func formatModules(modules map[string]string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func formatModule(path, version string) string {
+	if path == "" {
+		return "<empty>"
+	}
+	if version != "" {
+		return path + "@" + version
+	}
+	return path
 }
 
 func read(path string) string {
