@@ -1,5 +1,8 @@
 # Clean-room provenance
 
+The canonical project provenance record is [PROVENANCE.md](../PROVENANCE.md).
+This companion document retains the pre-publication audit checklist.
+
 Status: candidate provenance record; independent audit still required
 
 Handoff date: 2026-07-31

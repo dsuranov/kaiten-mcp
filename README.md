@@ -112,7 +112,8 @@ releases until the release audit is complete.
 - [Usage](docs/usage.md)
 - [Security](docs/security.md)
 - [Release testing](docs/release-testing.md)
-- [Clean-room provenance](docs/clean-room-provenance.md)
+- [Clean-room provenance](PROVENANCE.md)
+- [Provenance audit checklist](docs/clean-room-provenance.md)
 
 Public protocol references:
 
