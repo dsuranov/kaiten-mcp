@@ -69,6 +69,7 @@ archives:
       - NOTICE
       - THIRD_PARTY_NOTICES.md
       - README.md
+      - PROVENANCE.md
       - docs/*.md
 
   - id: kaiten-mcp
@@ -87,6 +88,7 @@ archives:
       - NOTICE
       - THIRD_PARTY_NOTICES.md
       - README.md
+      - PROVENANCE.md
       - docs/*.md
 
 sboms:
