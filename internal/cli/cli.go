@@ -358,6 +358,18 @@ func validateLocal(spec commandSpec, command parsedCommand) (validation, error) 
 		if command.present["column-id"] == command.present["column-name"] {
 			return result, errors.New("exactly one of --column-id or --column-name is required")
 		}
+		if command.present["due-date"] && command.values["due-date"] == "" {
+			return result, errors.New("--due-date must not be empty when creating a card")
+		}
+	}
+	if spec.group == "blockers" && spec.name == "block" {
+		reason := strings.TrimSpace(command.values["reason"])
+		if !command.present["reason"] || reason == "" {
+			return result, errors.New("--reason is required by the Kaiten block-card API and must not be empty")
+		}
+		if len([]rune(command.values["reason"])) > 4096 {
+			return result, errors.New("--reason must not exceed 4096 characters")
+		}
 	}
 	if spec.group == "cards" && spec.name == "update" {
 		updateCount := 0

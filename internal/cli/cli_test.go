@@ -120,8 +120,11 @@ func TestInvalidInputDoesNotLoadConfigOrSendRequest(t *testing.T) {
 		{"cards", "list", "--board-id", "2", "--archived", "--all"},
 		{"cards", "create", "--title", "x", "--board-id", "2"},
 		{"cards", "create", "--title", "x", "--board-id", "2", "--column-id", "3", "--column-name", "Ready"},
+		{"cards", "create", "--title", "x", "--board-id", "2", "--column-id", "3", "--due-date="},
 		{"cards", "update", "5"},
 		{"comments", "add", "--card-id", "5", "--text", ""},
+		{"blockers", "block", "--card-id", "5"},
+		{"blockers", "block", "--card-id", "5", "--reason="},
 		{"checklists", "check", "--card-id", "5", "--checklist-id", "7", "--item-id", "bad"},
 	}
 	for _, args := range tests {

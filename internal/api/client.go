@@ -18,7 +18,10 @@ import (
 	"github.com/dsuranov/kaiten-mcp/internal/config"
 )
 
-const maxReadAttempts = 3
+const (
+	maxReadAttempts      = 3
+	maxResponseBodyBytes = 16 * 1024 * 1024
+)
 
 // Error is a sanitized domain-level API failure.
 type Error struct {
@@ -141,9 +144,12 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 		return nil, 0, true, &Error{Type: "upstream", Message: "Kaiten request failed before a response was received"}
 	}
 	defer resp.Body.Close()
-	payload, readErr := io.ReadAll(resp.Body)
+	payload, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if readErr != nil {
 		return nil, 0, true, &Error{Type: "upstream", Message: "could not read the Kaiten response"}
+	}
+	if len(payload) > maxResponseBodyBytes {
+		return nil, 0, false, &Error{Type: "upstream", Message: "Kaiten response exceeded the maximum allowed size"}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		apiErr := classifyHTTP(resp.StatusCode)

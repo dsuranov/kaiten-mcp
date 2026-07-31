@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -187,6 +189,19 @@ func TestHTTPFailureClassificationAndInvalidJSON(t *testing.T) {
 				t.Fatalf("status %d classified as %#v", test.status, err)
 			}
 		})
+	}
+}
+
+func TestResponseBodyIsBoundedBeforeAllocation(t *testing.T) {
+	oversized := bytes.Repeat([]byte("x"), maxResponseBodyBytes+1)
+	client, _ := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(oversized)
+	}), 10000, 1)
+	_, err := client.JSON(context.Background(), http.MethodGet, "/oversized", nil, nil)
+	var apiError *Error
+	if !errors.As(err, &apiError) || apiError.Type != "upstream" || !strings.Contains(apiError.Message, "maximum allowed size") {
+		t.Fatalf("oversized response was not rejected safely: %#v", err)
 	}
 }
 
