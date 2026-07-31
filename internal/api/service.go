@@ -62,8 +62,16 @@ func (s *Service) ListBoards(ctx context.Context, spaceID *int64, limit *int) (a
 }
 
 func (s *Service) GetBoard(ctx context.Context, id int64, includeCards bool) (any, error) {
-	_ = includeCards
-	return s.Client.JSON(ctx, http.MethodGet, fmt.Sprintf("/boards/%d", id), nil, nil)
+	value, err := s.Client.JSON(ctx, http.MethodGet, fmt.Sprintf("/boards/%d", id), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !includeCards {
+		if object, ok := value.(map[string]any); ok {
+			delete(object, "cards")
+		}
+	}
+	return value, nil
 }
 
 func (s *Service) BoardStructure(ctx context.Context, selector string) (any, bool, error) {
@@ -187,7 +195,11 @@ func (s *Service) ResolveLane(ctx context.Context, boardID int64, selector strin
 }
 
 func (s *Service) Discovery(ctx context.Context, path, key string) (any, bool, error) {
-	return s.Client.CachedJSON(ctx, key, path, nil)
+	query := url.Values{}
+	if path == "/company/custom-properties" {
+		query.Set("include_values", "true")
+	}
+	return s.Client.CachedJSON(ctx, key, path, query)
 }
 
 func (s *Service) GetPath(ctx context.Context, path string) (any, error) {

@@ -523,11 +523,17 @@ func runMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 			fmt.Fprintf(stdout, "kaiten-mcp %s\n", version.String())
 			return 0
 		case "install":
+			if len(args) != 1 {
+				return fail(stderr, "mcp install accepts no arguments")
+			}
 			if dependencies.MCPInstall == nil {
 				return fail(stderr, "installer is unavailable")
 			}
 			return dependencies.MCPInstall(ctx, stdin, stdout, stderr)
 		case "uninstall":
+			if len(args) != 1 {
+				return fail(stderr, "mcp uninstall accepts no arguments")
+			}
 			if dependencies.MCPUninstall == nil {
 				return fail(stderr, "uninstaller is unavailable")
 			}

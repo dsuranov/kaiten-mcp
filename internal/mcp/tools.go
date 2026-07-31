@@ -60,13 +60,13 @@ func (s *Server) executeTool(ctx context.Context, name string, arguments map[str
 		data, err := s.service.CurrentUser(ctx)
 		return data, false, err
 	case "get_member_cards":
-		user, cached, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
+		user, _, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
 		if err != nil {
 			return nil, false, err
 		}
 		query := url.Values{"member_ids": {strconv.FormatInt(user.ID, 10)}}
 		data, err := s.cardsFromArguments(ctx, query, arguments)
-		return data, cached, err
+		return data, false, err
 	case "get_my_cards":
 		current, err := s.service.CurrentUser(ctx)
 		if err != nil {
@@ -79,12 +79,12 @@ func (s *Server) executeTool(ctx context.Context, name string, arguments map[str
 		data, err := s.cardsFromArguments(ctx, url.Values{"owner_id": {strconv.FormatInt(id, 10)}}, arguments)
 		return data, false, err
 	case "get_responsible_cards":
-		user, cached, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
+		user, _, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
 		if err != nil {
 			return nil, false, err
 		}
 		data, err := s.cardsFromArguments(ctx, url.Values{"responsible_id": {strconv.FormatInt(user.ID, 10)}}, arguments)
-		return data, cached, err
+		return data, false, err
 	case "get_server_info":
 		return map[string]any{"version": version.String(), "runtime": runtime.Version()}, false, nil
 	case "get_space":
@@ -196,6 +196,8 @@ func (s *Server) getCard(ctx context.Context, arguments map[string]any) (any, bo
 			return nil, false, err
 		}
 		object["comments"] = comments
+	} else {
+		delete(object, "comments")
 	}
 	if boolArgument(arguments, "include_members", true) {
 		members, err := s.service.GetPath(ctx, fmt.Sprintf("/cards/%d/members", id))
@@ -203,6 +205,8 @@ func (s *Server) getCard(ctx context.Context, arguments map[string]any) (any, bo
 			return nil, false, err
 		}
 		object["members"] = members
+	} else {
+		delete(object, "members")
 	}
 	if boolArgument(arguments, "include_relations", true) {
 		children, err := s.service.GetPath(ctx, fmt.Sprintf("/cards/%d/children", id))
@@ -210,6 +214,10 @@ func (s *Server) getCard(ctx context.Context, arguments map[string]any) (any, bo
 			return nil, false, err
 		}
 		object["children"] = children
+	} else {
+		for _, field := range []string{"children", "parents", "children_ids", "parents_ids"} {
+			delete(object, field)
+		}
 	}
 	return object, false, nil
 }
@@ -232,16 +240,16 @@ func (s *Server) mutate(ctx context.Context, method, path string, body any) (any
 }
 
 func (s *Server) addMember(ctx context.Context, arguments map[string]any) (any, bool, error) {
-	user, cached, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
+	user, _, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
 	if err != nil {
 		return nil, false, err
 	}
 	data, err := s.service.Mutate(ctx, http.MethodPost, fmt.Sprintf("/cards/%d/members", integerArgument(arguments, "card_id")), map[string]any{"user_id": user.ID})
-	return data, cached, err
+	return data, false, err
 }
 
 func (s *Server) createCard(ctx context.Context, arguments map[string]any) (any, bool, error) {
-	board, cached, err := s.service.ResolveBoard(ctx, stringArgument(arguments, "board"))
+	board, _, err := s.service.ResolveBoard(ctx, stringArgument(arguments, "board"))
 	if err != nil {
 		return nil, false, err
 	}
@@ -254,35 +262,32 @@ func (s *Server) createCard(ctx context.Context, arguments map[string]any) (any,
 		copyPresent(body, arguments, name)
 	}
 	if owner, present := arguments["owner"]; present && owner != nil {
-		user, userCached, err := s.service.ResolveUser(ctx, owner.(string))
+		user, _, err := s.service.ResolveUser(ctx, owner.(string))
 		if err != nil {
 			return nil, false, err
 		}
-		cached = cached && userCached
 		body["owner_id"] = user.ID
 	}
 	if properties, present := arguments["properties"]; present && properties != nil {
-		resolved, propertiesCached, err := s.resolveProperties(ctx, properties.(map[string]any))
+		resolved, _, err := s.resolveProperties(ctx, properties.(map[string]any))
 		if err != nil {
 			return nil, false, err
 		}
-		cached = cached && propertiesCached
 		body["properties"] = resolved
 	}
 	data, err := s.service.Mutate(ctx, http.MethodPost, "/cards", body)
-	return data, cached, err
+	return data, false, err
 }
 
 func (s *Server) moveCard(ctx context.Context, arguments map[string]any) (any, bool, error) {
 	cardID := integerArgument(arguments, "card_id")
 	var boardID int64
-	cached := false
 	if selector, present := arguments["board"]; present && selector != nil {
-		board, boardCached, err := s.service.ResolveBoard(ctx, selector.(string))
+		board, _, err := s.service.ResolveBoard(ctx, selector.(string))
 		if err != nil {
 			return nil, false, err
 		}
-		boardID, cached = board.ID, boardCached
+		boardID = board.ID
 	} else {
 		card, err := s.service.GetCard(ctx, cardID, false, false, false)
 		if err != nil {
@@ -300,11 +305,11 @@ func (s *Server) moveCard(ctx context.Context, arguments map[string]any) (any, b
 	body := map[string]any{"board_id": boardID, "column_id": column.ID}
 	copyPresent(body, arguments, "lane_id")
 	data, err := s.service.Mutate(ctx, http.MethodPatch, fmt.Sprintf("/cards/%d", cardID), body)
-	return data, cached, err
+	return data, false, err
 }
 
 func (s *Server) removeMember(ctx context.Context, arguments map[string]any) (any, bool, error) {
-	user, cached, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
+	user, _, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
 	if err != nil {
 		return nil, false, err
 	}
@@ -312,17 +317,17 @@ func (s *Server) removeMember(ctx context.Context, arguments map[string]any) (an
 	if _, err := s.service.Mutate(ctx, http.MethodDelete, fmt.Sprintf("/cards/%d/members/%d", cardID, user.ID), nil); err != nil {
 		return nil, false, err
 	}
-	return map[string]any{"removed_user_id": user.ID}, cached, nil
+	return map[string]any{"removed_user_id": user.ID}, false, nil
 }
 
 func (s *Server) setResponsible(ctx context.Context, arguments map[string]any) (any, bool, error) {
-	user, cached, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
+	user, _, err := s.service.ResolveUser(ctx, stringArgument(arguments, "user"))
 	if err != nil {
 		return nil, false, err
 	}
 	path := fmt.Sprintf("/cards/%d/members/%d", integerArgument(arguments, "card_id"), user.ID)
 	data, err := s.service.Mutate(ctx, http.MethodPatch, path, map[string]any{"type": 2})
-	return data, cached, err
+	return data, false, err
 }
 
 func (s *Server) updateCard(ctx context.Context, arguments map[string]any) (any, bool, error) {
@@ -330,35 +335,33 @@ func (s *Server) updateCard(ctx context.Context, arguments map[string]any) (any,
 	for _, name := range []string{"title", "description", "due_date", "type_id", "size_text", "planned_start", "planned_end", "tag_ids"} {
 		copyPresent(body, arguments, name)
 	}
-	cached := false
 	if owner, present := arguments["owner"]; present {
 		if owner == nil {
 			body["owner_id"] = nil
 		} else {
-			user, userCached, err := s.service.ResolveUser(ctx, owner.(string))
+			user, _, err := s.service.ResolveUser(ctx, owner.(string))
 			if err != nil {
 				return nil, false, err
 			}
-			body["owner_id"], cached = user.ID, userCached
+			body["owner_id"] = user.ID
 		}
 	}
 	if properties, present := arguments["properties"]; present {
 		if properties == nil {
 			body["properties"] = nil
 		} else {
-			resolved, propertiesCached, err := s.resolveProperties(ctx, properties.(map[string]any))
+			resolved, _, err := s.resolveProperties(ctx, properties.(map[string]any))
 			if err != nil {
 				return nil, false, err
 			}
 			body["properties"] = resolved
-			cached = cached && propertiesCached
 		}
 	}
 	if len(body) == 0 {
 		return nil, false, domainError("validation", "update_card requires at least one field to change")
 	}
 	data, err := s.service.Mutate(ctx, http.MethodPatch, fmt.Sprintf("/cards/%d", integerArgument(arguments, "card_id")), body)
-	return data, cached, err
+	return data, false, err
 }
 
 func (s *Server) updateChecklistItem(ctx context.Context, arguments map[string]any) (any, bool, error) {
@@ -417,6 +420,14 @@ func (s *Server) resolveProperties(ctx context.Context, requested map[string]any
 			output = number
 		case "select", "single_select", "multi_select":
 			options := propertyOptions(definition)
+			if len(options) == 0 {
+				optionValue, optionCached, err := s.service.Discovery(ctx, fmt.Sprintf("/company/custom-properties/%d/select-values", property.ID), fmt.Sprintf("custom-property:%d:select-values", property.ID))
+				if err != nil {
+					return nil, false, err
+				}
+				cached = cached && optionCached
+				options = optionResources(optionValue)
+			}
 			parts := []string{valueText}
 			multi, _ := definition["multi_select"].(bool)
 			if strings.EqualFold(kind, "multi_select") || multi {
@@ -443,23 +454,28 @@ func (s *Server) resolveProperties(ctx context.Context, requested map[string]any
 
 func propertyOptions(definition map[string]any) []api.Resource {
 	for _, key := range []string{"values", "select_values", "options"} {
-		if items, ok := definition[key].([]any); ok {
-			resources := make([]api.Resource, 0, len(items))
-			for _, item := range items {
-				object, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				name, _ := object["name"].(string)
-				if name == "" {
-					name, _ = object["value"].(string)
-				}
-				resources = append(resources, api.Resource{ID: objectInteger(object, "id"), Name: name})
-			}
-			return resources
+		if _, ok := definition[key].([]any); ok {
+			return optionResources(definition[key])
 		}
 	}
 	return nil
+}
+
+func optionResources(value any) []api.Resource {
+	items, _ := value.([]any)
+	resources := make([]api.Resource, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := object["name"].(string)
+		if name == "" {
+			name, _ = object["value"].(string)
+		}
+		resources = append(resources, api.Resource{ID: objectInteger(object, "id"), Name: name})
+	}
+	return resources
 }
 
 func validateDomainInput(spec toolSpec, arguments map[string]any) error {
@@ -473,7 +489,7 @@ func validateDomainInput(spec toolSpec, arguments map[string]any) error {
 			}
 		}
 		if text, ok := value.(string); ok {
-			if requiredName(spec.required, name) && strings.TrimSpace(text) == "" {
+			if (requiredName(spec.required, name) || name == "title") && strings.TrimSpace(text) == "" {
 				return domainError("validation", fmt.Sprintf("%s must not be empty", name))
 			}
 			if name == "due_date" || name == "planned_start" || name == "planned_end" {

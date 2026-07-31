@@ -229,6 +229,9 @@ func validateTenantURL(raw string) (*url.URL, error) {
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("KAITEN_URL must not contain credentials, query, or fragment")
 	}
+	if strings.Trim(u.Path, "/") != "" {
+		return nil, errors.New("KAITEN_URL must be a tenant origin without a path")
+	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	return u, nil
 }

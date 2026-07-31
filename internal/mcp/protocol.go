@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dsuranov/kaiten-mcp/internal/api"
@@ -70,10 +69,7 @@ func (s *Server) handle(ctx context.Context, request rpcRequest) *rpcResponse {
 				return errorResponse(request.ID, -32602, "invalid initialize parameters", nil)
 			}
 		}
-		protocol := strings.TrimSpace(params.ProtocolVersion)
-		if protocol == "" {
-			protocol = fallbackProtocolVersion
-		}
+		protocol := negotiateProtocol(strings.TrimSpace(params.ProtocolVersion))
 		return resultResponse(request.ID, map[string]any{
 			"protocolVersion": protocol,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
@@ -232,6 +228,11 @@ func (s *Server) HTTPHandler(path string) http.Handler {
 		}
 		switch request.Method {
 		case http.MethodPost:
+			accept := request.Header.Get("Accept")
+			if accept != "" && !strings.Contains(accept, "application/json") && !strings.Contains(accept, "*/*") {
+				writeJSON(w, http.StatusNotAcceptable, map[string]any{"error": "Accept must allow application/json"})
+				return
+			}
 			defer request.Body.Close()
 			decoder := json.NewDecoder(io.LimitReader(request.Body, 16*1024*1024))
 			var message rpcRequest
@@ -283,6 +284,16 @@ func newSessionID() string {
 	return hex.EncodeToString(bytes)
 }
 
+func negotiateProtocol(requested string) string {
+	supported := []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
+	for _, version := range supported {
+		if requested == version {
+			return version
+		}
+	}
+	return fallbackProtocolVersion
+}
+
 // ServeHTTP binds, serves, and shuts down gracefully when the context ends.
 func (s *Server) ServeHTTP(ctx context.Context, host string, port int, path string) error {
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
@@ -310,15 +321,4 @@ func (s *Server) ServeHTTP(ctx context.Context, host string, port int, path stri
 		}
 		return err
 	}
-}
-
-type lockedWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (w *lockedWriter) Write(data []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.w.Write(data)
 }

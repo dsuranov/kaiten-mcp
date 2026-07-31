@@ -25,8 +25,16 @@ func main() {
 			fmt.Println("Usage: kaiten-mcp [--transport <stdio|streamable-http>] [--host <bind-host>] [--port <1..65535>] [--streamable-http-path <path>]\n       kaiten-mcp install|uninstall|version")
 			return
 		case "install":
+			if len(args) != 1 {
+				fmt.Fprintln(os.Stderr, "error: install accepts no arguments")
+				os.Exit(1)
+			}
 			os.Exit(install.RunInstall(ctx, os.Stdin, os.Stdout, os.Stderr))
 		case "uninstall":
+			if len(args) != 1 {
+				fmt.Fprintln(os.Stderr, "error: uninstall accepts no arguments")
+				os.Exit(1)
+			}
 			os.Exit(install.RunUninstall(ctx, os.Stdin, os.Stdout, os.Stderr))
 		}
 	}
