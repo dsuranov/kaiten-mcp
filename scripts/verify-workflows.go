@@ -185,6 +185,12 @@ func main() {
 		"runs-on: ${{ matrix.runner }}",
 		"ref: ${{ inputs.expected_sha }}",
 		"persist-credentials: false",
+		`- name: Install Linux user-session DBus prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends dbus-user-session`,
 		"run: ./scripts/build-native-lifecycle-fixtures.sh",
 		"go run ./scripts/prepare-native-lifecycle-release.go",
 		"go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go",
