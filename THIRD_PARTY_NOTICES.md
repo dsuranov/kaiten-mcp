@@ -3,8 +3,8 @@
 Release binaries contain portions of the Go runtime and standard library and
 the following Go modules, selected for hidden terminal input:
 
-- `golang.org/x/term` v0.34.0 (direct dependency)
-- `golang.org/x/sys` v0.35.0 (transitive dependency)
+- `golang.org/x/term` v0.45.0 (direct dependency)
+- `golang.org/x/sys` v0.47.0 (transitive dependency)
 
 All of these portions are distributed under the BSD 3-Clause license below.
 The two module versions are also recorded in `go.mod`, `go.sum`, and release

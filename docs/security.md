@@ -83,6 +83,12 @@ versions and BSD 3-Clause notice are recorded in the module files, SBOMs, and
 `THIRD_PARTY_NOTICES.md`. CI runs static analysis, tests, race detection, and
 cross-builds; release review must reconcile dependency licenses and notices.
 
+The release toolchain is fixed at Go 1.26.5 and checked before every build.
+CI scans both executables for every target, and the release gate repeats
+binary-mode vulnerability scans on the exact executable bytes extracted from
+the final archives. `go version -m` must identify Go 1.26.5 for every scanned
+binary; a source-only vulnerability scan is not sufficient evidence.
+
 ## Reporting a vulnerability
 
 Use the repository's private security-advisory channel when available. Include

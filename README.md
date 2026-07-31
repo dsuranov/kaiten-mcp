@@ -90,12 +90,14 @@ for examples.
 
 ## Build and test
 
-Go 1.23 or newer is required to build from source.
+Go 1.26.0 or newer is required by the module. Release and acceptance builds
+must use the pinned patched toolchain, Go 1.26.5.
 
 ```sh
 go test ./...
 go test -race ./...
 go vet ./...
+./scripts/verify-go-toolchain.sh
 go build ./cmd/kaiten
 go build ./cmd/kaiten-mcp
 ```

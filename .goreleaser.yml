@@ -5,6 +5,7 @@ project_name: kaiten-mcp
 
 before:
   hooks:
+    - ./scripts/verify-go-toolchain.sh
     - go mod verify
     - go test ./...
 

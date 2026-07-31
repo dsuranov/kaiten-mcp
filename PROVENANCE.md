@@ -53,6 +53,11 @@ support dependency. The external module is used only for non-echoing terminal
 input. GoReleaser and Syft are pinned release-time tools and are not runtime
 dependencies.
 
+Go 1.26.5 was independently selected from the official stable releases as the
+patched release toolchain. Repository checks reject another compiler version,
+and release acceptance inspects and vulnerability-scans the executable bytes
+extracted from every final archive.
+
 ## Excluded sources
 
 The implementation team did not inspect or use a legacy or reference

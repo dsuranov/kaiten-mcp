@@ -63,7 +63,7 @@ kaiten-mcp.exe version
 
 ## Build from source
 
-With Go 1.23 or newer:
+With Go 1.26.0 or newer (release builds require the pinned Go 1.26.5 patch):
 
 ```sh
 go build -trimpath -o ./bin/kaiten ./cmd/kaiten

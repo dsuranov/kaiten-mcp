@@ -52,6 +52,11 @@ selected for the runtime; `golang.org/x/sys` is its platform support dependency.
 The external module is used only for non-echoing terminal input. GoReleaser and
 Syft are release-time tools, not runtime services.
 
+Go 1.26.5 was independently selected from the official stable releases as the
+patched release toolchain. Repository checks reject another compiler version,
+and release acceptance inspects and vulnerability-scans the executable bytes
+extracted from every final archive.
+
 ## Excluded material
 
 The implementation team must not access any previous implementation source,

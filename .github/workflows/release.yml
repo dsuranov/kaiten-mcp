@@ -10,6 +10,9 @@ permissions:
   id-token: write
   attestations: write
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   verify:
     name: Verify release candidate
@@ -23,8 +26,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: "1.26.5"
+          check-latest: false
           cache: true
+
+      - name: Verify selected Go toolchain
+        run: ./scripts/verify-go-toolchain.sh
 
       - name: Run release checks
         shell: bash
@@ -47,8 +54,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: "1.26.5"
+          check-latest: false
           cache: true
+
+      - name: Verify selected Go toolchain
+        run: ./scripts/verify-go-toolchain.sh
+
+      - name: Install pinned binary vulnerability scanner
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/security-tools"
+          GOBIN="$RUNNER_TEMP/security-tools" go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          "$RUNNER_TEMP/security-tools/govulncheck" -version
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
@@ -84,6 +102,32 @@ jobs:
             grep -Eq '/README\.md$' <<<"$entries"
             grep -Eq '/PROVENANCE\.md$' <<<"$entries"
           done
+
+      - name: Verify packaged binary toolchains and vulnerabilities
+        shell: bash
+        env:
+          GOVULNCHECK_BIN: ${{ runner.temp }}/security-tools/govulncheck
+        run: |
+          scan_root="$(mktemp -d)"
+          trap 'rm -rf -- "$scan_root"' EXIT
+          archive_index=0
+          for archive in dist/*.tar.gz dist/*.zip; do
+            archive_index=$((archive_index + 1))
+            destination="$scan_root/$archive_index"
+            mkdir -p "$destination"
+            if [[ "$archive" == *.zip ]]; then
+              unzip -q "$archive" -d "$destination"
+            else
+              tar -xzf "$archive" -C "$destination"
+            fi
+          done
+          mapfile -d '' packaged_binaries < <(
+            find "$scan_root" -type f \
+              \( -name kaiten -o -name kaiten.exe -o -name kaiten-mcp -o -name kaiten-mcp.exe \) \
+              -print0
+          )
+          test "${#packaged_binaries[@]}" -eq 15
+          ./scripts/verify-go-binaries.sh "${packaged_binaries[@]}"
 
       - name: Attest checksum manifest
         uses: actions/attest@v4

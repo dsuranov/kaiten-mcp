@@ -14,6 +14,7 @@ version, Syft version, runner image, artifact hashes, tester, and date.
 From the frozen candidate:
 
 ```sh
+./scripts/verify-go-toolchain.sh
 go mod verify
 go vet ./...
 go test ./...
@@ -21,6 +22,21 @@ go test -race ./...
 go test -covermode=atomic -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out
 ```
+
+The module requires Go 1.26.0 and pins release work to Go 1.26.5, selected under
+the official [Go release policy](https://go.dev/doc/devel/release#policy) from
+the current [stable downloads](https://go.dev/dl/). Install the official
+scanner at the repository-pinned version, then require both build metadata and
+binary-mode vulnerability checks for every executable:
+
+```sh
+GOBIN="$PWD/bin/tools" go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+GOVULNCHECK_BIN="$PWD/bin/tools/govulncheck" \
+  ./scripts/verify-go-binaries.sh ./bin/kaiten ./bin/kaiten-mcp
+```
+
+The tag workflow repeats this check on every executable extracted from the
+final archives. Source-mode scanning alone does not qualify packaged bytes.
 
 Confirm `gofmt` reports no tracked Go file, the working tree is clean, and CI
 passes on Linux, macOS, and Windows. Coverage is a measurement, not a substitute
