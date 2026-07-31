@@ -317,6 +317,14 @@ func (e *Engine) Uninstall(ctx context.Context, input io.Reader, output, diagnos
 			}
 		}
 	}
+	// systemd cached the unit while it still existed during deactivate. Reload
+	// once more after deleting the definition so a successful uninstall leaves
+	// neither an active service nor a stale loaded unit identity behind.
+	if e.GOOS == "linux" {
+		if err := e.Commands.Run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
+			failures = append(failures, fmt.Errorf("refresh user service manager after removal: %w", err))
+		}
+	}
 	if affirmative(removeAnswer) {
 		for _, path := range []string{layout.ClaudeCodeConfig, layout.ClaudeDesktopConfig} {
 			if err := mergeClientConfig(path, "", true); err != nil && !errors.Is(err, os.ErrNotExist) {

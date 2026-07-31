@@ -554,6 +554,15 @@ func TestFailedWindowsReplacementKeepsDestination(t *testing.T) {
 func TestUninstallIsScopedIdempotentAndPreservesLogs(t *testing.T) {
 	engine := newTestEngine(t, "linux", &fakeHealth{})
 	layout, _ := layoutFor("linux", engine.Home)
+	commands := &scriptedCommands{}
+	var reloadSawDefinition []bool
+	commands.run = func(_ int, name string, arguments []string) error {
+		if name == "systemctl" && strings.Join(arguments, " ") == "--user daemon-reload" {
+			reloadSawDefinition = append(reloadSawDefinition, fileExists(layout.ServiceDefinition))
+		}
+		return nil
+	}
+	engine.Commands = commands
 	for _, path := range []string{layout.Binary, layout.Environment, layout.ServiceDefinition, layout.Log} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -570,6 +579,9 @@ func TestUninstallIsScopedIdempotentAndPreservesLogs(t *testing.T) {
 	var output strings.Builder
 	if err := engine.Uninstall(context.Background(), strings.NewReader("y\n"), &output, io.Discard); err != nil {
 		t.Fatal(err)
+	}
+	if len(reloadSawDefinition) != 2 || !reloadSawDefinition[0] || reloadSawDefinition[1] {
+		t.Fatalf("systemd reload states = %v, want definition present before removal then absent", reloadSawDefinition)
 	}
 	for _, path := range []string{layout.Binary, layout.Environment, layout.ServiceDefinition} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -588,6 +600,9 @@ func TestUninstallIsScopedIdempotentAndPreservesLogs(t *testing.T) {
 	}
 	if err := engine.Uninstall(context.Background(), strings.NewReader("n\n"), io.Discard, io.Discard); err != nil {
 		t.Fatalf("idempotent uninstall failed: %v", err)
+	}
+	if len(reloadSawDefinition) != 3 || reloadSawDefinition[2] {
+		t.Fatalf("idempotent uninstall did not refresh absent unit: %v", reloadSawDefinition)
 	}
 }
 
