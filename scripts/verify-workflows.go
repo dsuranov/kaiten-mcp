@@ -86,6 +86,14 @@ func main() {
 	if !strings.Contains(ci.raw, "run: ./scripts/verify-reproducible-release.sh --snapshot") {
 		fail("CI must run the two-build snapshot reproducibility gate")
 	}
+	for name, raw := range map[string]string{"CI": ci.raw, "release": release.raw} {
+		if !strings.Contains(raw, "go run ./scripts/verify-dependency-policy.go") {
+			fail("%s must verify dependency notices and provenance", name)
+		}
+		if !strings.Contains(raw, "go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go") {
+			fail("%s must test the native evidence validator", name)
+		}
+	}
 
 	native := parseWorkflow(".github/workflows/native-lifecycle.yml")
 	if !native.topExplicit || !samePermissions(native.topPermissions, permissionSet{"contents": "read"}) {
@@ -124,6 +132,8 @@ func main() {
 		"run: ./scripts/run-native-lifecycle-ci.sh",
 		"if: always()",
 		"name: native-lifecycle-${{ matrix.id }}",
+		"go run ./scripts/verify-dependency-policy.go",
+		"go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go",
 	} {
 		if !strings.Contains(native.raw, required) {
 			fail("native lifecycle workflow is missing reviewed gate fragment %q", required)

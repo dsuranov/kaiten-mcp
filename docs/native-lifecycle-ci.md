@@ -21,6 +21,9 @@ The workflow uses only these GitHub-hosted labels and never `self-hosted`:
 The Linux wrapper creates a dedicated user, starts that user's `user@.service`,
 and runs the harness and installed service without root privileges. `sudo` is
 used only by the runner wrapper to create and later remove that disposable user.
+The harness rejects a runner label whose resolved `GOOS` or `GOARCH` differs
+from this table, so a moving hosted alias cannot silently remove architecture
+coverage.
 
 ## Lifecycle proved by each job
 
@@ -42,7 +45,9 @@ The job then:
 6. performs a healthy update to `native-v2`;
 7. attempts an update to the repository's intentional `native-v3` no-health
    fixture, requires the installer to fail, and proves the executable and
-   running health endpoint rolled back to `native-v2`;
+   running health endpoint rolled back to `native-v2`; exact executable,
+   environment, and service-definition hashes must match the pre-failure state,
+   and a new MCP call must authenticate successfully after rollback;
 8. uninstalls twice, verifies client JSON preservation, checks permissions and
    owned-file scope, and requires the synthetic bearer to be absent everywhere
    except the restricted environment file before uninstall and everywhere
@@ -59,23 +64,33 @@ GitHub CLI, for example:
 gh workflow run native-lifecycle.yml --ref <candidate-ref>
 gh run watch <run-id> --exit-status
 gh run download <run-id> --pattern 'native-lifecycle-*' --dir native-evidence
+go run ./scripts/verify-native-lifecycle-evidence.go native-evidence <40-character-commit> \
+  | tee native-evidence-verification.txt
 ```
 
-Every matrix job uploads one `native-lifecycle-<target>` artifact containing a
-mode-restricted `summary.json`. It records the commit, exact runner label,
-architecture, version transitions, native-manager checks, permission result,
-client and restricted-backup preservation, authorization proof, and final file inventory. Captured
-installer output is checked for the generated bearer and ephemeral paths are
-redacted before evidence is written. The artifact itself is rejected if it
-contains the bearer.
+Every matrix job uploads one `native-lifecycle-<target>` artifact. Its
+mode-restricted `summary.json` records the commit, workflow run, runner image,
+exact runner label and runtime architecture, Go version, fixture hashes,
+version transitions, native-manager checks, permission result, client and
+restricted-backup preservation, authorization proof, and final file inventory.
+Companion files retain redacted installer commands, exact health responses,
+native-manager status, before/after client JSON, permission results, rollback
+hashes, the token-free service definition and log, MCP authorization results,
+and the remaining-file list. Captured output is checked for the generated
+bearer before redaction; every evidence file is also rejected if it contains
+the bearer.
 
 Match all five passing summaries to the frozen commit and GitHub run before
-qualifying a release. A workflow file, cross-build, local unit test, or preflight
+qualifying a release. The aggregate verifier requires one exact artifact set
+per runner, one workflow run/attempt, Go 1.26.5, complete companion evidence,
+the reviewed version transitions, and no synthetic token, authorization header,
+or mock tenant body. A workflow file, cross-build, local unit test, or preflight
 failure is not native execution evidence.
 
-## Current execution status
+## Execution records
 
-As of 2026-07-31, authorship of this gate produced no clean private-repository
-GitHub-hosted matrix run. That remote run and its five retained artifacts remain
-pending; the workflow configuration alone must not be cited as a passed native
-lifecycle gate.
+This repository defines the gate but does not self-certify a particular run.
+The exact workflow URL, run ID, commit, five downloaded artifacts, verification
+result, tester, and UTC decision belong in the dated external audit package for
+each release. The workflow configuration alone must never be cited as passed
+native lifecycle evidence.

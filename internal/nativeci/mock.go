@@ -74,6 +74,12 @@ func (m *mockAPI) AuthProof() error {
 	return nil
 }
 
+func (m *mockAPI) AuthorizedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.authorized
+}
+
 type rpcEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -109,7 +115,35 @@ func proveMCP(ctx context.Context, client *http.Client, endpoint, expectedVersio
 	if err != nil || response.StatusCode != http.StatusAccepted {
 		return errors.New("MCP initialized notification was not accepted")
 	}
-	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_current_user","arguments":{}}}`
+	listedResponse := `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`
+	_, body, err = postMCP(ctx, client, endpoint, session, "2025-06-18", listedResponse)
+	if err != nil {
+		return fmt.Errorf("list read-only tools: %w", err)
+	}
+	var listed rpcEnvelope
+	if err := json.Unmarshal(body, &listed); err != nil || len(listed.Error) != 0 {
+		return errors.New("tools/list returned an invalid JSON-RPC response")
+	}
+	var toolList struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			Annotations struct {
+				ReadOnly bool `json:"readOnlyHint"`
+			} `json:"annotations"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(listed.Result, &toolList); err != nil {
+		return errors.New("tools/list result was invalid")
+	}
+	readTool, writeTool := false, false
+	for _, tool := range toolList.Tools {
+		readTool = readTool || tool.Name == "get_current_user"
+		writeTool = writeTool || !tool.Annotations.ReadOnly
+	}
+	if !readTool || writeTool {
+		return errors.New("native installation did not expose the expected read-only tool set")
+	}
+	call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_current_user","arguments":{}}}`
 	_, body, err = postMCP(ctx, client, endpoint, session, "2025-06-18", call)
 	if err != nil {
 		return fmt.Errorf("call get_current_user: %w", err)

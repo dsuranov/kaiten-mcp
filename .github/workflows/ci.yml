@@ -43,6 +43,12 @@ jobs:
       - name: Verify module files
         run: go mod verify
 
+      - name: Verify dependency notices and provenance
+        run: go run ./scripts/verify-dependency-policy.go
+
+      - name: Verify native evidence validator
+        run: go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go
+
       - name: Check gofmt
         shell: bash
         run: |

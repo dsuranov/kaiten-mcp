@@ -109,8 +109,8 @@ func childEnvironment(profile, tenantURL, token string) []string {
 }
 
 type capture struct {
-	label, stdout, stderr string
-	exitCode              int
+	label, command, stdout, stderr string
+	exitCode                       int
 }
 
 func runCaptured(ctx context.Context, executable string, arguments []string, input string, directory string, environment []string) (capture, error) {
@@ -121,7 +121,8 @@ func runCaptured(ctx context.Context, executable string, arguments []string, inp
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
-	result := capture{label: filepath.Base(executable) + " " + strings.Join(arguments, " "), stdout: stdout.String(), stderr: stderr.String()}
+	commandName := filepath.Base(executable) + " " + strings.Join(arguments, " ")
+	result := capture{label: commandName, command: commandName, stdout: stdout.String(), stderr: stderr.String()}
 	if err == nil {
 		return result, nil
 	}
@@ -146,6 +147,15 @@ func outputQuiet(ctx context.Context, name string, arguments ...string) (string,
 	command.Stderr = io.Discard
 	output, err := command.Output()
 	return strings.TrimSpace(string(output)), err
+}
+
+func combinedOutput(ctx context.Context, name string, arguments ...string) (string, error) {
+	command := exec.CommandContext(ctx, name, arguments...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s status failed: %w", name, err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func currentUID() (string, error) {
@@ -216,6 +226,24 @@ func serviceActive(ctx context.Context, paths layout) error {
 		return nil
 	default:
 		return errors.New("unsupported service manager")
+	}
+}
+
+func managerStatus(ctx context.Context, paths layout) (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		uid, err := currentUID()
+		if err != nil {
+			return "", err
+		}
+		return combinedOutput(ctx, "launchctl", "print", "gui/"+uid+"/"+serviceLabel)
+	case "linux":
+		return combinedOutput(ctx, "systemctl", "--user", "status", "--no-pager", "--full", serviceUnit)
+	case "windows":
+		script := fmt.Sprintf(`$target='%s'; $found=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | Select-Object ProcessId,ExecutablePath,CommandLine; if(!$found){exit 1}; $found | ConvertTo-Json -Depth 3`, psQuote(paths.binary))
+		return combinedOutput(ctx, "powershell", "-NoProfile", "-Command", script)
+	default:
+		return "", errors.New("unsupported service manager")
 	}
 }
 

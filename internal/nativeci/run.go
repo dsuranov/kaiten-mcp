@@ -39,6 +39,8 @@ func Run(ctx context.Context, config Config) (runErr error) {
 		return err
 	}
 	defer func() {
+		commandErr := h.writeCommandArtifacts()
+		runErr = errors.Join(runErr, commandErr)
 		cleanupErr := h.cleanup()
 		runErr = errors.Join(runErr, cleanupErr)
 		if runErr == nil {
@@ -65,10 +67,17 @@ func newHarness(config Config) (*harness, error) {
 		}
 	}
 	profile := filepath.Clean(config.Profile)
+	evidenceDir := filepath.Clean(config.EvidenceDir)
 	if !strings.Contains(strings.ToLower(filepath.Base(profile)), "native-lifecycle") || profile == filepath.VolumeName(profile)+string(filepath.Separator) {
 		return nil, errors.New("refusing a non-disposable native lifecycle profile path")
 	}
-	if info, err := os.Stat(profile); err == nil {
+	if pathsOverlap(profile, evidenceDir) {
+		return nil, errors.New("native lifecycle profile and evidence directory must not overlap")
+	}
+	if info, err := os.Lstat(profile); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("native lifecycle profile must not be a symbolic link")
+		}
 		if !info.IsDir() {
 			return nil, errors.New("native lifecycle profile path is not a directory")
 		}
@@ -79,10 +88,20 @@ func newHarness(config Config) (*harness, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	wantBinary := "kaiten-mcp"
+	if runtime.GOOS == "windows" {
+		wantBinary += ".exe"
+	}
 	for _, candidate := range []string{config.V1, config.V2, config.V3} {
 		if info, err := os.Stat(candidate); err != nil || info.IsDir() {
 			return nil, fmt.Errorf("lifecycle candidate is unavailable: %s", filepath.Base(candidate))
 		}
+		if !strings.EqualFold(filepath.Base(candidate), wantBinary) {
+			return nil, fmt.Errorf("lifecycle candidate must be named %s", wantBinary)
+		}
+	}
+	if err := validateRunnerRuntime(config.RunnerLabel, runtime.GOOS, runtime.GOARCH); err != nil {
+		return nil, err
 	}
 	paths, err := expectedLayout(runtime.GOOS, profile)
 	if err != nil {
@@ -97,6 +116,35 @@ func newHarness(config Config) (*harness, error) {
 		return nil, err
 	}
 	return &harness{config: config, paths: paths, evidence: newEvidence(config.RunnerLabel, config.Commit, time.Now()), token: token, client: &http.Client{Timeout: 2 * time.Second}}, nil
+}
+
+func pathsOverlap(first, second string) bool {
+	inside := func(parent, candidate string) bool {
+		relative, err := filepath.Rel(parent, candidate)
+		return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	}
+	return inside(first, second) || inside(second, first)
+}
+
+type runnerRuntime struct{ goos, goarch string }
+
+var hostedRunnerRuntimes = map[string]runnerRuntime{
+	"macos-15-intel":   {goos: "darwin", goarch: "amd64"},
+	"macos-latest":     {goos: "darwin", goarch: "arm64"},
+	"ubuntu-latest":    {goos: "linux", goarch: "amd64"},
+	"ubuntu-24.04-arm": {goos: "linux", goarch: "arm64"},
+	"windows-latest":   {goos: "windows", goarch: "amd64"},
+}
+
+func validateRunnerRuntime(label, goos, goarch string) error {
+	expected, ok := hostedRunnerRuntimes[label]
+	if !ok {
+		return fmt.Errorf("unreviewed native lifecycle runner label %q", label)
+	}
+	if expected.goos != goos || expected.goarch != goarch {
+		return fmt.Errorf("runner %s resolved to %s/%s, want %s/%s", label, goos, goarch, expected.goos, expected.goarch)
+	}
+	return nil
 }
 
 func (h *harness) check(name, detail string) {
@@ -133,6 +181,9 @@ func (h *harness) run(ctx context.Context) error {
 	if err := seedClientConfigs(h.paths); err != nil {
 		return fmt.Errorf("seed synthetic client configuration: %w", err)
 	}
+	if err := h.captureClientState("clients-before-install.json"); err != nil {
+		return fmt.Errorf("capture initial client configuration: %w", err)
+	}
 	mock, err := startMockAPI(h.token)
 	if err != nil {
 		return fmt.Errorf("start loopback mock API: %w", err)
@@ -144,18 +195,30 @@ func (h *harness) run(ctx context.Context) error {
 	if err := h.invoke(ctx, "install-v1", h.config.V1, []string{"install"}, "\n\ny\n", environment, false); err != nil {
 		return err
 	}
-	if err := waitForHealth(ctx, h.client, "http://127.0.0.1:8100/health", "native-v1", 10*time.Second); err != nil {
+	if err := h.captureHealth(ctx, "health-install-v1.json", "native-v1"); err != nil {
 		return err
 	}
 	if err := serviceActive(ctx, h.paths); err != nil {
 		return fmt.Errorf("native service manager did not report v1 active: %w", err)
 	}
+	if err := h.captureManagerStatus(ctx, "manager-install-v1.txt"); err != nil {
+		return fmt.Errorf("capture v1 manager status: %w", err)
+	}
+	if err := requireFileMatches(h.paths.binary, h.config.V1); err != nil {
+		return fmt.Errorf("installed v1 bytes: %w", err)
+	}
 	h.check("install-health", "native-v1 active at loopback health endpoint")
 	if err := verifyClientConfigs(h.paths, true); err != nil {
 		return err
 	}
+	if err := h.captureClientState("clients-registered-v1.json"); err != nil {
+		return err
+	}
 	permissions, err := verifyPermissions(ctx, h.paths)
 	if err != nil {
+		return err
+	}
+	if err := h.writeJSONArtifact("permissions.json", permissions); err != nil {
 		return err
 	}
 	h.check("permissions", strings.Join(permissions, "; "))
@@ -163,6 +226,9 @@ func (h *harness) run(ctx context.Context) error {
 		return err
 	}
 	if err := mock.AuthProof(); err != nil {
+		return err
+	}
+	if err := h.writeJSONArtifact("mcp-auth-v1.json", map[string]any{"endpoint": "http://127.0.0.1:8100/mcp", "server_version": "native-v1", "tool": "get_current_user", "mock_authorized_requests": mock.AuthorizedCount(), "write_tools_advertised": false}); err != nil {
 		return err
 	}
 	h.check("mcp-api-auth", "MCP initialized and get_current_user reached the loopback mock with the expected bearer")
@@ -174,21 +240,37 @@ func (h *harness) run(ctx context.Context) error {
 	if err := restartService(ctx, h.paths); err != nil {
 		return fmt.Errorf("native restart: %w", err)
 	}
-	if err := waitForHealth(ctx, h.client, "http://127.0.0.1:8100/health", "native-v1", 10*time.Second); err != nil {
+	if err := h.captureHealth(ctx, "health-restart-v1.json", "native-v1"); err != nil {
 		return err
 	}
 	if err := serviceActive(ctx, h.paths); err != nil {
 		return fmt.Errorf("native service manager did not report restarted v1 active: %w", err)
+	}
+	if err := h.captureManagerStatus(ctx, "manager-restart-v1.txt"); err != nil {
+		return fmt.Errorf("capture restarted v1 manager status: %w", err)
 	}
 	h.check("native-restart", nativeManagerName()+" restarted native-v1 and health recovered")
 
 	if err := h.invoke(ctx, "healthy-update-v2", h.config.V2, []string{"install"}, "u\n\n\ny\n", environment, false); err != nil {
 		return err
 	}
-	if err := waitForHealth(ctx, h.client, "http://127.0.0.1:8100/health", "native-v2", 10*time.Second); err != nil {
+	if err := h.captureHealth(ctx, "health-update-v2.json", "native-v2"); err != nil {
 		return err
 	}
 	if err := verifyInstalledVersion(ctx, h.paths.binary, "native-v2", h.config.Profile, environment); err != nil {
+		return err
+	}
+	if err := requireFileMatches(h.paths.binary, h.config.V2); err != nil {
+		return fmt.Errorf("installed v2 bytes: %w", err)
+	}
+	if err := h.captureManagerStatus(ctx, "manager-update-v2.txt"); err != nil {
+		return fmt.Errorf("capture v2 manager status: %w", err)
+	}
+	if err := h.captureClientState("clients-registered-v2.json"); err != nil {
+		return err
+	}
+	beforeRollback, err := ownedHashes(h.paths)
+	if err != nil {
 		return err
 	}
 	h.check("healthy-update", "installed executable and health transitioned from native-v1 to native-v2")
@@ -196,7 +278,7 @@ func (h *harness) run(ctx context.Context) error {
 	if err := h.invoke(ctx, "bad-service-update-v3", h.config.V3, []string{"install"}, "u\n\n\ny\n", environment, true); err != nil {
 		return err
 	}
-	if err := waitForHealth(ctx, h.client, "http://127.0.0.1:8100/health", "native-v2", 10*time.Second); err != nil {
+	if err := h.captureHealth(ctx, "health-rollback-v2.json", "native-v2"); err != nil {
 		return fmt.Errorf("rollback did not restore v2 health: %w", err)
 	}
 	if err := verifyInstalledVersion(ctx, h.paths.binary, "native-v2", h.config.Profile, environment); err != nil {
@@ -205,11 +287,46 @@ func (h *harness) run(ctx context.Context) error {
 	if err := serviceActive(ctx, h.paths); err != nil {
 		return fmt.Errorf("rollback did not reactivate native-v2: %w", err)
 	}
+	if err := requireFileMatches(h.paths.binary, h.config.V2); err != nil {
+		return fmt.Errorf("rollback executable bytes: %w", err)
+	}
+	afterRollback, err := ownedHashes(h.paths)
+	if err != nil {
+		return err
+	}
+	if err := requireHashesEqual(beforeRollback, afterRollback); err != nil {
+		return err
+	}
+	if err := h.writeJSONArtifact("rollback-hashes.json", map[string]any{"before_failed_update": beforeRollback, "after_rollback": afterRollback}); err != nil {
+		return err
+	}
+	if err := h.captureManagerStatus(ctx, "manager-rollback-v2.txt"); err != nil {
+		return fmt.Errorf("capture rollback manager status: %w", err)
+	}
 	if err := verifyClientConfigs(h.paths, true); err != nil {
 		return err
 	}
-	if err := verifyBackupPermissions(ctx, h.paths); err != nil {
+	if err := h.captureClientState("clients-after-rollback.json"); err != nil {
+		return err
+	}
+	backupPermissions, err := verifyBackupPermissions(ctx, h.paths)
+	if err != nil {
 		return fmt.Errorf("rollback backup permissions: %w", err)
+	}
+	if err := h.writeJSONArtifact("rollback-backup-permissions.json", backupPermissions); err != nil {
+		return err
+	}
+	if err := proveMCP(ctx, h.client, "http://127.0.0.1:8100/mcp", "native-v2"); err != nil {
+		return fmt.Errorf("rollback MCP/API proof: %w", err)
+	}
+	if err := mock.AuthProof(); err != nil {
+		return err
+	}
+	if err := h.writeJSONArtifact("mcp-auth-rollback-v2.json", map[string]any{"endpoint": "http://127.0.0.1:8100/mcp", "server_version": "native-v2", "tool": "get_current_user", "mock_authorized_requests": mock.AuthorizedCount(), "write_tools_advertised": false}); err != nil {
+		return err
+	}
+	if err := h.captureServiceFiles(); err != nil {
+		return fmt.Errorf("capture service definition and log: %w", err)
 	}
 	h.check("failed-update-rollback", "native-v3 produced no health endpoint; installer failed and restored healthy native-v2")
 
@@ -223,6 +340,9 @@ func (h *harness) run(ctx context.Context) error {
 		return err
 	}
 	if err := verifyClientConfigs(h.paths, false); err != nil {
+		return err
+	}
+	if err := h.captureClientState("clients-after-uninstall.json"); err != nil {
 		return err
 	}
 	if err := h.invoke(ctx, "uninstall-second", h.config.V2, []string{"uninstall"}, "y\n", environment, false); err != nil {
@@ -244,6 +364,12 @@ func (h *harness) run(ctx context.Context) error {
 	if err := scanForToken(h.config.Profile, h.token, nil); err != nil {
 		return err
 	}
+	if err := h.writeJSONArtifact("remaining-files.json", remaining); err != nil {
+		return err
+	}
+	if err := h.writeTextArtifact("manager-final.txt", nativeManagerName()+" state=absent"); err != nil {
+		return err
+	}
 	for _, captured := range h.captures {
 		if strings.Contains(captured.stdout, h.token) || strings.Contains(captured.stderr, h.token) {
 			return fmt.Errorf("%s output exposed the synthetic token", captured.label)
@@ -251,6 +377,12 @@ func (h *harness) run(ctx context.Context) error {
 	}
 	h.check("double-uninstall", "both uninstall invocations succeeded and the native service identity is absent")
 	h.check("final-owned-file-and-secret-scan", "only preserved log and unrelated client configs remain: "+strings.Join(remaining, ", "))
+	if err := h.writeCommandArtifacts(); err != nil {
+		return err
+	}
+	if err := h.verifyArtifactSet(); err != nil {
+		return err
+	}
 	return nil
 }
 

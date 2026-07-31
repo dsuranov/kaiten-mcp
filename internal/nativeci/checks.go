@@ -108,7 +108,7 @@ func verifyPermissions(ctx context.Context, paths layout) ([]string, error) {
 	return result, nil
 }
 
-func verifyBackupPermissions(ctx context.Context, paths layout) error {
+func verifyBackupPermissions(ctx context.Context, paths layout) ([]string, error) {
 	checks := []struct {
 		path string
 		mode fs.FileMode
@@ -119,22 +119,25 @@ func verifyBackupPermissions(ctx context.Context, paths layout) error {
 		{paths.claudeCode + ".bak", 0o600},
 		{paths.claudeDesktop + ".bak", 0o600},
 	}
+	result := make([]string, 0, len(checks))
 	for _, check := range checks {
 		if runtime.GOOS == "windows" {
 			if err := verifyWindowsACL(ctx, check.path); err != nil {
-				return err
+				return nil, err
 			}
+			result = append(result, filepath.Base(check.path)+":owner-and-SYSTEM-only")
 			continue
 		}
 		info, err := os.Stat(check.path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if info.Mode().Perm() != check.mode {
-			return fmt.Errorf("backup %s mode is %04o, want %04o", filepath.Base(check.path), info.Mode().Perm(), check.mode)
+			return nil, fmt.Errorf("backup %s mode is %04o, want %04o", filepath.Base(check.path), info.Mode().Perm(), check.mode)
 		}
+		result = append(result, fmt.Sprintf("%s:%04o", filepath.Base(check.path), check.mode))
 	}
-	return nil
+	return result, nil
 }
 
 func verifyWindowsACL(ctx context.Context, path string) error {

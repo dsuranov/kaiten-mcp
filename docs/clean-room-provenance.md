@@ -3,7 +3,8 @@
 The canonical project provenance record is [PROVENANCE.md](../PROVENANCE.md).
 This companion document retains the pre-publication audit checklist.
 
-Status: candidate provenance record; independent audit still required
+Status: durable audit procedure; release status is recorded in dated external
+evidence for the exact tagged commit
 
 Handoff date: 2026-07-31
 
@@ -47,10 +48,11 @@ Implementation and documentation may use only:
 - newly authored fake servers, fixtures, and tests derived from neutral
   contracts.
 
-The Go standard library and public `golang.org/x/term` module were independently
-selected for the runtime; `golang.org/x/sys` is its platform support dependency.
-The external module is used only for non-echoing terminal input. GoReleaser and
-Syft are release-time tools, not runtime services.
+The Go standard library and public `golang.org/x/term` v0.45.0 module were
+independently selected for the runtime; `golang.org/x/sys` v0.47.0 is its
+platform support dependency. The external module is used only for non-echoing
+terminal input. GoReleaser and Syft are release-time tools, not runtime
+services.
 
 Go 1.26.5 was independently selected from the official stable releases as the
 patched release toolchain. Repository checks reject another compiler version,
@@ -114,8 +116,9 @@ must return to implementation only as neutral, dated input/output amendments.
 
 ## Release decision
 
-Release remains **NO-GO** until the implementer certifies the access boundary,
-an external verifier records contract results, the provenance/license auditor
-signs off, and CI plus native release tests pass. The automated release workflow
-therefore creates a draft release. Publishing that draft is a separate human
-decision after the evidence package is complete.
+Publication is permitted only when dated external evidence for the exact tagged
+commit records the access-boundary certification, external contract results,
+provenance and license sign-off, CI success, and native release tests. This
+procedure does not self-certify any run. The automated workflow creates a draft
+release; publishing remains a separate human decision recorded with the
+release-specific evidence package.

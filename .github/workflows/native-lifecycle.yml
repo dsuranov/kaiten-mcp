@@ -46,7 +46,9 @@ jobs:
         shell: bash
         run: |
           go run ./scripts/verify-workflows.go
+          go run ./scripts/verify-dependency-policy.go
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+          go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go
           go vet ./internal/nativeci ./cmd/native-lifecycle-harness ./cmd/native-lifecycle-bad-service
           go test ./internal/nativeci
 

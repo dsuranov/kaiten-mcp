@@ -1,9 +1,11 @@
 # Clean-room provenance
 
-Status: candidate provenance record; release approval still requires independent
-verification
+Status: durable provenance record; release status is determined by
+dated external acceptance evidence for the exact tagged commit
 
 Handoff date: 2026-07-31
+
+Project author and maintainer: Denis Suranov (GitHub: `dsuranov`)
 
 ## Scope
 
@@ -113,11 +115,12 @@ but it remains part of the retained audit evidence.
 
 ## Dependency and license record
 
-`go list -m all` is expected to list only
-`github.com/dsuranov/kaiten-mcp`. Project-authored material is offered under
-Apache-2.0. Release archives carry `LICENSE`, `NOTICE`, and
-`THIRD_PARTY_NOTICES.md`. Generated SBOMs and the module graph must agree before
-release approval.
+`go list -m all` is expected to list exactly the root module plus
+`golang.org/x/term` v0.45.0 and its `golang.org/x/sys` v0.47.0 support
+dependency. Project-authored material is offered under Apache-2.0. Release
+archives carry `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Generated
+SBOMs, the module graph, this record, and the third-party notices must agree
+before release approval.
 
 Public product and protocol names are used only to describe interoperability.
 They do not imply ownership, sponsorship, or endorsement.
@@ -145,8 +148,9 @@ update, rollback, and uninstall checks on macOS, Linux, and Windows.
 
 ## Release decision
 
-The project remains **NO-GO** for publication until an independent verifier
-records black-box contract results, a provenance and license auditor signs off,
-CI passes at the frozen commit, and native lifecycle evidence exists for every
-supported operating system. Release automation therefore creates drafts only;
-publishing is a separate human decision.
+Publication is permitted only when dated external evidence for the exact tagged
+commit records passing black-box contract results, provenance and license audit
+sign-off, CI success, and native lifecycle evidence for every supported
+operating system. This in-repository provenance record does not claim those
+external gates have passed. Release automation creates drafts only; the dated
+external release decision remains a separate human-controlled record.

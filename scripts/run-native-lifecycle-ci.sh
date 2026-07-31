@@ -7,6 +7,16 @@ runner_label="${NATIVE_CI_RUNNER_LABEL:?NATIVE_CI_RUNNER_LABEL is required}"
 runner_id="${NATIVE_CI_RUNNER_ID:?NATIVE_CI_RUNNER_ID is required}"
 commit="${GITHUB_SHA:-local-unpublished-candidate}"
 extension="$(go env GOEXE)"
+mkdir -p "$evidence"
+{
+  echo "runner_label=$runner_label"
+  echo "runner_id=$runner_id"
+  echo "runner_os=${RUNNER_OS:-local}"
+  echo "candidate_commit=$commit"
+  echo "workflow_run_id=${GITHUB_RUN_ID:-local}"
+  echo "workflow_run_attempt=${GITHUB_RUN_ATTEMPT:-local}"
+} >"$evidence/wrapper-context.txt"
+chmod 0600 "$evidence/wrapper-context.txt"
 
 run_harness() {
   local harness="$1"
@@ -25,7 +35,6 @@ run_harness() {
 
 if [[ "${RUNNER_OS:-}" != "Linux" ]]; then
   profile="$RUNNER_TEMP/native-lifecycle-profile-$runner_id"
-  mkdir -p "$evidence"
   run_harness "$build/native-lifecycle-harness$extension" "$build" "$profile" "$evidence"
   exit
 fi
@@ -104,7 +113,6 @@ sudo -u "$native_user" env \
 result=$?
 set -e
 
-mkdir -p "$evidence"
 sudo cp -R "$stage/evidence/." "$evidence/"
 sudo chown -R "$(id -u):$(id -g)" "$evidence"
 exit "$result"

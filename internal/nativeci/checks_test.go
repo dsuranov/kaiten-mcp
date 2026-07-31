@@ -24,6 +24,32 @@ func TestExpectedLayoutsStayInsideDisposableProfile(t *testing.T) {
 	}
 }
 
+func TestHostedRunnerRuntimeContractIsExact(t *testing.T) {
+	tests := []struct{ label, goos, goarch string }{
+		{"macos-15-intel", "darwin", "amd64"},
+		{"macos-latest", "darwin", "arm64"},
+		{"ubuntu-latest", "linux", "amd64"},
+		{"ubuntu-24.04-arm", "linux", "arm64"},
+		{"windows-latest", "windows", "amd64"},
+	}
+	for _, test := range tests {
+		if err := validateRunnerRuntime(test.label, test.goos, test.goarch); err != nil {
+			t.Fatalf("reviewed runner rejected: %v", err)
+		}
+		if err := validateRunnerRuntime(test.label, test.goos, "unexpected"); err == nil {
+			t.Fatalf("runner drift was accepted for %s", test.label)
+		}
+	}
+	if err := validateRunnerRuntime("self-hosted", "linux", "amd64"); err == nil {
+		t.Fatal("unreviewed runner label was accepted")
+	}
+	root := t.TempDir()
+	profile := filepath.Join(root, "native-lifecycle-profile")
+	if !pathsOverlap(profile, filepath.Join(profile, "evidence")) || pathsOverlap(profile, filepath.Join(root, "native-evidence")) {
+		t.Fatal("profile/evidence overlap guard is incorrect")
+	}
+}
+
 func TestClientFixturePreservesUnrelatedKeysAcrossRegistrationRemoval(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "native-lifecycle-profile")
 	paths, err := expectedLayout("linux", profile)

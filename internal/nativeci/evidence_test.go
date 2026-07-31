@@ -24,6 +24,22 @@ func TestEvidenceNeverPersistsSyntheticToken(t *testing.T) {
 	}
 }
 
+func TestEvidenceRejectsAuthorizationAndMockTenantBodies(t *testing.T) {
+	for _, value := range []string{
+		"Authorization: Bearer redacted",
+		`{"authorization":"Bearer redacted"}`,
+		`{"id": 4242, "username": "native-lifecycle"}`,
+	} {
+		path := filepath.Join(t.TempDir(), "unsafe.txt")
+		if err := writeTextArtifact(path, value, "synthetic-token"); err == nil {
+			t.Fatalf("unsafe evidence was accepted: %s", value)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("unsafe evidence was written: %v", err)
+		}
+	}
+}
+
 func TestRedactReplacesEphemeralPathsAndRejectsToken(t *testing.T) {
 	value, err := redact("ready /tmp/native-profile", "marker", map[string]string{"/tmp/native-profile": "$PROFILE"})
 	if err != nil || value != "ready $PROFILE" {
