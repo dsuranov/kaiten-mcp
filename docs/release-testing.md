@@ -3,8 +3,10 @@
 ## Release gate
 
 A tag build creates a draft release, not an automatic public release. Publish
-only after the frozen candidate, automated checks, native lifecycle evidence,
-license/SBOM reconciliation, and clean-room audit all refer to the same commit.
+only after the frozen candidate, automated checks, stable-target native
+lifecycle evidence, license/SBOM reconciliation, and clean-room audit all refer
+to the same commit. Every beta target must be disclosed in the README and
+release notes and linked to a public issue with acceptance criteria.
 
 Record the release tag, full commit, workflow run, Go version, GoReleaser
 version, Syft version, runner image, artifact hashes, tester, and date.
@@ -94,7 +96,7 @@ archive. Reconcile SBOM packages with `go list -m all` and
 Run artifacts on native hardware or a native hosted runner wherever available;
 do not treat cross-compilation alone as execution evidence.
 
-For each supported target:
+For each distributed target:
 
 1. extract into a new temporary directory;
 2. run `kaiten --version`, `kaiten mcp version`, and `kaiten-mcp version` and
@@ -132,26 +134,30 @@ and at-most-once mutation cases under the race detector.
 
 ## 5. Native installer cycle
 
-At least one full native installer cycle is mandatory on each supported
-operating system before publishing:
+At least one full native installer cycle is mandatory on each operating system
+claimed stable. A beta target may ship only when its common build and artifact
+gates pass, its native limitation is stated in the README and release notes,
+and a public `help wanted` issue records the current evidence and graduation
+criteria.
 
 The manually dispatched, GitHub-hosted implementation of this gate is described
-in [Native lifecycle CI](native-lifecycle-ci.md). Its five per-runner evidence
-artifacts must refer to the frozen candidate commit. The existence of the
-workflow is not execution evidence.
+in [Native lifecycle CI](native-lifecycle-ci.md). Every per-runner evidence
+artifact used for a stable claim must refer to the frozen candidate commit. A
+full all-platform graduation decision requires all five artifacts. The
+existence of the workflow is not execution evidence.
 
-| Operating system | Minimum native cycle | Additional architecture evidence |
+| Operating system | Tier | Minimum native evidence |
 | --- | --- | --- |
-| macOS | amd64 or arm64 | Launch smoke on both release architectures. |
-| Linux | amd64 or arm64 | Launch smoke on both release architectures. |
-| Windows | amd64 | Covered by the native cycle. |
+| macOS | Stable | Full cycle plus launch smoke on amd64 and arm64. |
+| Linux | Beta | Common artifact gates; full cycle tracked in [#2](https://github.com/dsuranov/kaiten-mcp/issues/2). |
+| Windows | Beta | Common artifact gates; full cycle tracked in [#3](https://github.com/dsuranov/kaiten-mcp/issues/3). |
 
 Use a disposable VM, hosted runner, or dedicated test user with a newly created
 profile. The cycle must not read or modify a developer's real MCP-client
 configuration. Drive the service against a new local fake API token and tenant;
 never use production credentials.
 
-For each operating system:
+For each target being qualified through the native cycle:
 
 1. assert no product service or files exist in the test profile;
 2. install in default read-only mode without elevated privileges;
@@ -178,11 +184,13 @@ as evidence.
 
 ## 6. Failure handling
 
-Any mismatch, missing target, invalid SBOM, installer rollback failure, secret
-disclosure, unreviewed dependency, or unexplained provenance finding keeps the
-release **NO-GO**. Do not replace the frozen candidate silently. Fix on a new
-commit, create a new candidate tag or draft, and rerun the affected gate plus
-any downstream gate whose inputs changed.
+Any mismatch, missing artifact, invalid SBOM, stable-target installer failure,
+secret disclosure, unreviewed dependency, or unexplained provenance finding
+keeps the release **NO-GO**. A native failure on a beta target is not a stable
+claim and may be accepted only with an explicit release-note warning and linked
+public issue. Do not replace the frozen candidate silently. Fix on a new commit,
+create a new candidate tag or draft, and rerun the affected gate plus any
+downstream gate whose inputs changed.
 
 ## Evidence record template
 

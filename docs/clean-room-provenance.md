@@ -107,7 +107,8 @@ An auditor who was not the primary implementer must retain evidence that:
       SBOMs agree;
 - [ ] CLI, MCP, API robustness, installer, and release acceptance gates pass at
       one frozen commit;
-- [ ] native release testing evidence exists for macOS, Linux, and Windows;
+- [ ] native release testing evidence exists for every target claimed stable,
+      while beta targets are disclosed and linked to public tracking issues;
 - [ ] Apache-2.0 is applied only to independently authored project material.
 
 External parity verification may begin only after the candidate commit is
@@ -118,7 +119,8 @@ must return to implementation only as neutral, dated input/output amendments.
 
 Publication is permitted only when dated external evidence for the exact tagged
 commit records the access-boundary certification, external contract results,
-provenance and license sign-off, CI success, and native release tests. This
-procedure does not self-certify any run. The automated workflow creates a draft
-release; publishing remains a separate human decision recorded with the
-release-specific evidence package.
+provenance and license sign-off, CI success, and native tests for every target
+claimed stable. Beta targets require explicit release-note disclosure and a
+public issue. This procedure does not self-certify any run. The automated
+workflow creates a draft release; publishing remains a separate human decision
+recorded with the release-specific evidence package.

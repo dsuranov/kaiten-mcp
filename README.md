@@ -10,13 +10,19 @@ ships two native executables:
 MCP starts with read tools only. Write tools are not advertised unless the user
 explicitly enables them.
 
-## Supported releases
+## Release availability and support
 
-| Operating system | Architectures | Archive |
-| --- | --- | --- |
-| macOS | amd64, arm64 | `.tar.gz` |
-| Linux | amd64, arm64 | `.tar.gz` |
-| Windows | amd64 | `.zip` |
+| Operating system | Architectures | Archive | Support status |
+| --- | --- | --- | --- |
+| macOS | amd64, arm64 | `.tar.gz` | Stable; native installer lifecycle verified |
+| Linux | amd64, arm64 | `.tar.gz` | Beta; native installer lifecycle pending ([#2](https://github.com/dsuranov/kaiten-mcp/issues/2)) |
+| Windows | amd64 | `.zip` | Beta; native installer lifecycle pending ([#3](https://github.com/dsuranov/kaiten-mcp/issues/3)) |
+
+Linux and Windows release binaries pass unit, contract, cross-build,
+packaged-binary, vulnerability, and reproducibility checks. Their per-user
+background-service installers have not yet completed the full native lifecycle
+gate, so those platforms remain beta. Reproduction reports and focused pull
+requests are welcome; see [Contributing](CONTRIBUTING.md).
 
 Each release contains a full `kaiten` archive with both executables and an
 MCP-only `kaiten-mcp` archive. Releases also include SHA-256 checksums, SPDX JSON
@@ -103,12 +109,13 @@ go build ./cmd/kaiten
 go build ./cmd/kaiten-mcp
 ```
 
-CI additionally checks formatting, coverage, all supported cross-builds,
+CI additionally checks formatting, coverage, all release-target cross-builds,
 release configuration, and byte reproducibility across two independent clean
 builds. A separate manually dispatched [native lifecycle gate](docs/native-lifecycle-ci.md)
 executes install, restart, update rollback, and uninstall through GitHub-hosted
-operating-system service managers. Tagged builds use GoReleaser and are created
-as draft releases until the release audit is complete.
+operating-system service managers and determines whether a target can be called
+stable. Tagged builds use GoReleaser and are created as draft releases until
+the release audit is complete.
 
 ## Documentation
 
@@ -117,6 +124,7 @@ as draft releases until the release audit is complete.
 - [Configuration](docs/configuration.md)
 - [Usage](docs/usage.md)
 - [Security](docs/security.md)
+- [Contributing](CONTRIBUTING.md)
 - [Release testing](docs/release-testing.md)
 - [Native lifecycle CI](docs/native-lifecycle-ci.md)
 - [Reproducible builds](docs/reproducible-builds.md)

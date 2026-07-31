@@ -4,9 +4,16 @@
 
 Releases provide full `kaiten` and MCP-only `kaiten-mcp` archives for:
 
-- macOS amd64 and arm64;
-- Linux amd64 and arm64;
-- Windows amd64.
+| Operating system | Architectures | Support status |
+| --- | --- | --- |
+| macOS | amd64, arm64 | Stable; native installer lifecycle verified |
+| Linux | amd64, arm64 | Beta; native installer lifecycle pending ([#2](https://github.com/dsuranov/kaiten-mcp/issues/2)) |
+| Windows | amd64 | Beta; native installer lifecycle pending ([#3](https://github.com/dsuranov/kaiten-mcp/issues/3)) |
+
+Linux and Windows binaries pass the common build and packaged-binary gates,
+but their background-service installer paths have not completed native release
+qualification. Back up an existing installation before beta testing and add
+reproduction details to the linked issue. Pull requests are welcome.
 
 The `kaiten` archive contains both sibling executables so `kaiten mcp install`
 can install the background MCP service. Use the `kaiten-mcp` archive when only
@@ -74,6 +81,10 @@ Development builds report version `dev` unless release metadata is injected.
 
 ## Per-user background service
 
+The macOS service lifecycle is stable. The Linux and Windows service installers
+are beta until their linked native-lifecycle issues are closed; the standalone
+CLI and foreground MCP server remain available for testing on those platforms.
+
 Either command starts the same interactive installer:
 
 ```sh
@@ -124,6 +135,7 @@ remaining paths without printing secrets.
 
 Before upgrading, verify the new release checksum and review its release notes.
 Do not replace a running installed executable manually; use the installer so
-service activation and rollback are coordinated. Release qualification includes
-a native install/start/health/update/uninstall cycle on every supported
-operating system; see [Release testing](release-testing.md).
+service activation and rollback are coordinated. Stable-platform release
+qualification includes a native install/start/health/update/uninstall cycle.
+Beta targets must be identified in release notes and linked to a public tracking
+issue; see [Release testing](release-testing.md).

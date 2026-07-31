@@ -40,6 +40,19 @@ The workflow uses only these GitHub-hosted labels and never `self-hosted`:
 | Linux arm64 | `ubuntu-24.04-arm` | `systemd --user` over a real user DBus |
 | Windows amd64 | `windows-latest` | the isolated profile's Windows Startup entry |
 
+## Support tier and current scope
+
+Passing both macOS jobs qualifies the current macOS archives and per-user
+installer as stable when the same release also passes a local read-only
+acceptance run. Linux and Windows archives are currently beta: their common
+build and packaged-binary gates pass, while native installer completion remains
+tracked in [Linux issue #2](https://github.com/dsuranov/kaiten-mcp/issues/2) and
+[Windows issue #3](https://github.com/dsuranov/kaiten-mcp/issues/3).
+
+Beta status is not native execution evidence. It must remain visible in the
+README and release notes until the corresponding full lifecycle artifacts pass.
+Reproductions and focused pull requests are welcome.
+
 The Linux wrapper creates a dedicated user, starts that user's `user@.service`,
 and runs the harness and installed service without root privileges. `sudo` is
 used only by the runner wrapper to create and later remove that disposable user.
@@ -127,8 +140,11 @@ hash, exact release version/platform, and both extracted binary hashes. The API
 token and signed artifact URL are never written to evidence.
 
 Match all five passing summaries to the frozen commit and GitHub run before
-qualifying a release. The aggregate verifier requires one exact artifact set
-per runner, one workflow run/attempt, Go 1.26.5, complete companion evidence,
+qualifying all five targets as stable. A macOS-stable release requires both
+macOS summaries plus the release-specific local acceptance record; Linux and
+Windows remain beta until the aggregate all-target gate passes. The aggregate
+verifier requires one exact artifact set per runner, one workflow run/attempt,
+Go 1.26.5, complete companion evidence,
 the reviewed version transitions, and no synthetic token, authorization header,
 or mock tenant body. It also binds the API artifact digest, manifest/archive
 hashes, and both helper-recorded binary hashes to the hashes independently
@@ -139,11 +155,13 @@ preflight failure is not native execution evidence.
 
 This repository defines the gate but does not self-certify a particular run.
 The Release workflow creates only a draft; it does not make native success a
-circular prerequisite of the artifact build. Candidate source and that draft
-must remain in non-public staging until an external approval verifies the exact
-Release run plus all five native artifacts for the same SHA. Only that approval
-may qualify or publish the candidate.
-The exact workflow URL, run ID, commit, five downloaded artifacts, verification
-result, tester, and UTC decision belong in the dated external audit package for
-each release. The workflow configuration alone must never be cited as passed
-native lifecycle evidence.
+circular prerequisite of the artifact build. The draft remains unpublished
+until external approval verifies the exact Release run and every native target
+claimed stable for the same SHA. A failed beta-target job does not qualify that
+target, but it does not block a stable-target release when the limitation and
+public tracking issue are explicit.
+The exact workflow URL, run ID, commit, downloaded artifacts for every target
+claimed stable, verification result, tester, and UTC decision belong in the
+dated external audit package for each release. A full five-target graduation
+decision requires all five artifacts. The workflow configuration alone must
+never be cited as passed native lifecycle evidence.
