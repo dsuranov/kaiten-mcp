@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/dsuranov/kaiten-mcp/internal/install"
 	"github.com/dsuranov/kaiten-mcp/internal/mcp"
 	"github.com/dsuranov/kaiten-mcp/internal/version"
 )
@@ -23,9 +24,10 @@ func main() {
 		case "--help", "-h":
 			fmt.Println("Usage: kaiten-mcp [--transport <stdio|streamable-http>] [--host <bind-host>] [--port <1..65535>] [--streamable-http-path <path>]\n       kaiten-mcp install|uninstall|version")
 			return
-		case "install", "uninstall":
-			fmt.Fprintln(os.Stderr, "error: installer lifecycle is unavailable in this build")
-			os.Exit(1)
+		case "install":
+			os.Exit(install.RunInstall(ctx, os.Stdin, os.Stdout, os.Stderr))
+		case "uninstall":
+			os.Exit(install.RunUninstall(ctx, os.Stdin, os.Stdout, os.Stderr))
 		}
 	}
 	os.Exit(mcp.Run(ctx, args, os.Stdin, os.Stdout, os.Stderr))
