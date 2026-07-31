@@ -568,8 +568,15 @@ func (h *harness) cleanup() (postCleanupEvidence, error) {
 	if err := stopNativeService(ctx, h.paths); err != nil {
 		return proof, errors.Join(closeErr, fmt.Errorf("stop native service before profile cleanup: %w", err))
 	}
+	if err := nativeProcessAbsent(ctx, h.paths.binary); err != nil {
+		return proof, errors.Join(closeErr, fmt.Errorf("native process remains before profile cleanup: %w", err))
+	}
+	if err := requireServicePortFree(); err != nil {
+		return proof, errors.Join(closeErr, fmt.Errorf("native port remains occupied before profile cleanup: %w", err))
+	}
 	proof.ServiceAbsent = true
 	proof.ProcessAbsent = true
+	proof.Port8100Free = true
 	if err := os.RemoveAll(h.config.Profile); err != nil {
 		return proof, errors.Join(closeErr, fmt.Errorf("remove isolated native lifecycle profile: %w", err))
 	}
@@ -587,8 +594,8 @@ func (h *harness) cleanup() (postCleanupEvidence, error) {
 		return proof, errors.Join(closeErr, fmt.Errorf("native process remains after profile cleanup: %w", err))
 	}
 	if err := requireServicePortFree(); err != nil {
+		proof.Port8100Free = false
 		return proof, errors.Join(closeErr, fmt.Errorf("native port remains occupied after profile cleanup: %w", err))
 	}
-	proof.Port8100Free = true
 	return proof, closeErr
 }
