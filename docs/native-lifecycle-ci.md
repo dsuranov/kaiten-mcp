@@ -4,7 +4,17 @@ The manual `Native lifecycle` workflow is the release gate for executing the
 per-user installer through the operating system's real activation mechanism.
 It is deliberately `workflow_dispatch` only: each run creates services,
 processes, and disposable user profiles and therefore must be tied to a reviewed
-candidate commit.
+candidate commit. Dispatch requires both the exact lowercase 40-character head
+SHA and the numeric ID of a successful `Release` workflow run.
+
+Before any lifecycle state change, every matrix job authenticates to the GitHub
+API with the job's read-only token and fails closed unless that run belongs to
+this repository, is the `Release` tag-push workflow, completed successfully,
+has the expected head SHA, and its live `refs/tags/v*` ref still resolves to that
+commit. The only downloaded artifact is the run's unexpired `release-assets`.
+Only `native-v1`, the bad `native-v3` rollback fixture, and the harness are
+built locally; the healthy update candidate is always the downloaded release
+`kaiten-mcp` beside its matching `kaiten` binary.
 
 ## Hosted matrix
 
@@ -42,10 +52,13 @@ The job then:
 4. verifies exact-version health, performs MCP initialization and
    `get_current_user`, and proves the mock received the expected bearer header;
 5. restarts through the native activation mechanism and rechecks health;
-6. performs a healthy update to `native-v2`;
+6. validates every release checksum, safely extracts the exact full `kaiten`
+   archive for the runner, smokes the sibling `kaiten` and `kaiten-mcp` version
+   and Go platform identities, and performs a healthy update with those exact
+   released `kaiten-mcp` bytes;
 7. attempts an update to the repository's intentional `native-v3` no-health
    fixture, requires the installer to fail, and proves the executable and
-   running health endpoint rolled back to `native-v2`; exact executable,
+   running health endpoint rolled back to the exact release version; executable,
    environment, and service-definition hashes must match the pre-failure state,
    and a new MCP call must authenticate successfully after rollback;
 8. uninstalls twice, verifies client JSON preservation, checks permissions and
@@ -57,13 +70,18 @@ The no-health fixture is built only for this test. It is not a release artifact.
 
 ## Running and retaining evidence
 
-Dispatch the workflow at the exact candidate commit or reviewed branch. With
-GitHub CLI, for example:
+Dispatch while the source `release-assets` artifact is still retained (seven
+days in the Release workflow). With GitHub CLI, for example:
 
 ```sh
-gh workflow run native-lifecycle.yml --ref <candidate-ref>
-gh run watch <run-id> --exit-status
-gh run download <run-id> --pattern 'native-lifecycle-*' --dir native-evidence
+release_run_id=<successful-release-workflow-run-id>
+expected_sha=<exact-lowercase-40-character-release-head-sha>
+gh workflow run native-lifecycle.yml --ref <reviewed-workflow-ref> \
+  -f expected_sha="$expected_sha" \
+  -f release_run_id="$release_run_id"
+native_run_id=<dispatched-native-lifecycle-run-id>
+gh run watch "$native_run_id" --exit-status
+gh run download "$native_run_id" --pattern 'native-lifecycle-*' --dir native-evidence
 go run ./scripts/verify-native-lifecycle-evidence.go native-evidence <40-character-commit> \
   | tee native-evidence-verification.txt
 ```
@@ -79,6 +97,12 @@ hashes, the token-free service definition and log, MCP authorization results,
 and the remaining-file list. Captured output is checked for the generated
 bearer before redaction; every evidence file is also rejected if it contains
 the bearer.
+
+`wrapper-context.txt` retains a secret-free binding record for later audit
+aggregation: source Release run and attempt, tag and head SHA, artifact ID,
+artifact ZIP/API digest, checksum-manifest hash, selected full-archive name and
+hash, exact release version/platform, and both extracted binary hashes. The API
+token and signed artifact URL are never written to evidence.
 
 Match all five passing summaries to the frozen commit and GitHub run before
 qualifying a release. The aggregate verifier requires one exact artifact set

@@ -2,8 +2,18 @@ name: Native lifecycle
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact lowercase 40-character head SHA of the successful Release run
+        required: true
+        type: string
+      release_run_id:
+        description: Successful Release workflow run ID whose release-assets will be tested
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -29,8 +39,20 @@ jobs:
           - id: windows-amd64
             runner: windows-latest
     steps:
+      - name: Validate immutable release inputs
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -50,6 +72,7 @@ jobs:
           go run ./scripts/verify-dependency-policy.go
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
           go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go
+          go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go
           go vet ./internal/nativeci ./cmd/native-lifecycle-harness ./cmd/native-lifecycle-bad-service
           go test ./internal/nativeci
 
@@ -57,7 +80,24 @@ jobs:
         if: matrix.id == 'linux-amd64'
         run: go test -race ./internal/nativeci
 
-      - name: Build native lifecycle fixtures
+      - name: Bind exact Release bytes to native lifecycle
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          go run ./scripts/prepare-native-lifecycle-release.go \
+            --api-url "$GITHUB_API_URL" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$RELEASE_RUN_ID" \
+            --expected-sha "$EXPECTED_SHA" \
+            --work "$RUNNER_TEMP/native-release-binding" \
+            --output "$RUNNER_TEMP/native-lifecycle-build/release" \
+            --metadata "$RUNNER_TEMP/native-lifecycle-build/release-binding.txt"
+
+      - name: Build local v1 and bad-v3 fixtures
         shell: bash
         run: ./scripts/build-native-lifecycle-fixtures.sh "$RUNNER_TEMP/native-lifecycle-build"
 
@@ -66,6 +106,8 @@ jobs:
         env:
           NATIVE_CI_RUNNER_LABEL: ${{ matrix.runner }}
           NATIVE_CI_RUNNER_ID: ${{ matrix.id }}
+          NATIVE_CI_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NATIVE_CI_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
         run: ./scripts/run-native-lifecycle-ci.sh "$RUNNER_TEMP/native-lifecycle-build" "$RUNNER_TEMP/native-lifecycle-evidence"
 
       - name: Upload native lifecycle evidence

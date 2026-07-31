@@ -86,6 +86,9 @@ func main() {
 	}
 
 	release := parseWorkflow(".github/workflows/release.yml")
+	if !strings.HasPrefix(release.raw, "name: Release\n\non:\n  push:\n    tags:\n      - \"v*\"\n\npermissions: {}\n") {
+		fail("release workflow must be named Release and triggered only by v-prefixed tag pushes")
+	}
 	if !release.topExplicit || len(release.topPermissions) != 0 {
 		fail("release top-level permissions must be empty")
 	}
@@ -124,20 +127,29 @@ func main() {
 		if !strings.Contains(raw, "go test ./scripts/verify-native-lifecycle-evidence.go ./scripts/verify-native-lifecycle-evidence_test.go") {
 			fail("%s must test the native evidence validator", name)
 		}
+		if !strings.Contains(raw, "go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go") {
+			fail("%s must test the native release binding helper", name)
+		}
 	}
 
 	native := parseWorkflow(".github/workflows/native-lifecycle.yml")
-	if !native.topExplicit || !samePermissions(native.topPermissions, permissionSet{"contents": "read"}) {
-		fail("native lifecycle top-level permissions must be exactly contents: read")
+	if !native.topExplicit || !samePermissions(native.topPermissions, permissionSet{"actions": "read", "contents": "read"}) {
+		fail("native lifecycle top-level permissions must be exactly actions: read and contents: read")
 	}
 	if len(native.jobs) != 1 || native.jobs[0] != "native-lifecycle" {
 		fail("native lifecycle workflow must contain only the reviewed matrix job, got %v", native.jobs)
 	}
-	if len(native.tokenJobs) != 0 {
-		fail("native lifecycle workflow must not explicitly expose GITHUB_TOKEN: %v", native.tokenJobs)
+	if len(native.tokenJobs) != 1 || native.tokenJobs[0] != "native-lifecycle" {
+		fail("native lifecycle must expose its read-only token exactly once for the authenticated artifact download, got %v", native.tokenJobs)
 	}
 	if !strings.Contains(native.raw, "on:\n  workflow_dispatch:\n") {
 		fail("native lifecycle workflow must be manually dispatched")
+	}
+	for _, input := range []string{"expected_sha", "release_run_id"} {
+		pattern := regexp.MustCompile(`(?m)^      ` + regexp.QuoteMeta(input) + `:\n(?:        [^\n]*\n)*?        required: true\n(?:        [^\n]*\n)*?        type: string$`)
+		if !pattern.MatchString(native.raw) {
+			fail("native lifecycle dispatch input %s must be a required string", input)
+		}
 	}
 	for _, forbiddenTrigger := range []string{"\n  push:", "\n  pull_request:", "\n  schedule:", "\n  workflow_call:"} {
 		if strings.Contains(native.raw, forbiddenTrigger) {
@@ -158,8 +170,15 @@ func main() {
 		fail("native lifecycle runner labels = %v, want exact GitHub-hosted matrix %v", nativeRunners, wantNativeRunners)
 	}
 	for _, required := range []string{
+		"expected_sha:",
+		"release_run_id:",
 		"runs-on: ${{ matrix.runner }}",
+		"ref: ${{ inputs.expected_sha }}",
+		"persist-credentials: false",
 		"run: ./scripts/build-native-lifecycle-fixtures.sh",
+		"go run ./scripts/prepare-native-lifecycle-release.go",
+		"go test ./scripts/prepare-native-lifecycle-release.go ./scripts/prepare-native-lifecycle-release_test.go",
+		"GH_TOKEN: ${{ github.token }}",
 		"run: ./scripts/run-native-lifecycle-ci.sh",
 		"if: always()",
 		"name: native-lifecycle-${{ matrix.id }}",
