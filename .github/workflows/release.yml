@@ -114,6 +114,7 @@ jobs:
               entries="$(tar -tzf "$archive")"
             fi
             grep -Eq '/README\.md$' <<<"$entries"
+            grep -Eq '/CONTRIBUTING\.md$' <<<"$entries"
             grep -Eq '/PROVENANCE\.md$' <<<"$entries"
           done
 

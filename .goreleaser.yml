@@ -84,6 +84,8 @@ archives:
         info: *release_file_info
       - src: README.md
         info: *release_file_info
+      - src: CONTRIBUTING.md
+        info: *release_file_info
       - src: PROVENANCE.md
         info: *release_file_info
       - src: docs/*.md
@@ -109,6 +111,8 @@ archives:
       - src: THIRD_PARTY_NOTICES.md
         info: *release_file_info
       - src: README.md
+        info: *release_file_info
+      - src: CONTRIBUTING.md
         info: *release_file_info
       - src: PROVENANCE.md
         info: *release_file_info
