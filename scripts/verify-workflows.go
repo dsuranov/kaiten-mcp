@@ -219,6 +219,74 @@ func main() {
 	if !strings.Contains(wrapper, `"$script_directory/cleanup-native-lifecycle-linux.sh" "$native_user" "$resolved_uid" "$stage" "$evidence"`) {
 		fail("native lifecycle wrapper must invoke the reviewed Linux cleanup helper with exact targets")
 	}
+	for _, required := range []string{
+		`if [[ -e "$evidence" || -L "$evidence" ]]; then`,
+		`mkdir "$evidence"`,
+		`if [[ "${RUNNER_OS:-}" != "Windows" ]]; then`,
+		`chmod 0700 "$evidence"`,
+		`sudo systemctl start "user-runtime-dir@$uid.service"`,
+		`runtime_dir="/run/user/$uid"`,
+		`if [[ ! -d "$runtime_dir" || -L "$runtime_dir" ]]; then`,
+		`if [[ "$(stat -c '%u:%g' "$runtime_dir")" != "$uid:$gid" ]]; then`,
+		`sudo loginctl enable-linger "$native_user"`,
+		`sudo systemctl start "user@$uid.service"`,
+	} {
+		if !strings.Contains(wrapper, required) {
+			fail("native lifecycle wrapper is missing reviewed portability or Linux isolation fragment %q", required)
+		}
+	}
+	if strings.Contains(wrapper, `mkdir -m 0700 "$evidence"`) {
+		fail("native lifecycle wrapper must not use non-portable mkdir mode flags for the cross-platform evidence directory")
+	}
+	previous := -1
+	for _, ordered := range []string{
+		`if [[ -e "$evidence" || -L "$evidence" ]]; then`,
+		`mkdir "$evidence"`,
+		`sudo systemctl start "user-runtime-dir@$uid.service"`,
+		`runtime_dir="/run/user/$uid"`,
+		`if [[ ! -d "$runtime_dir" || -L "$runtime_dir" ]]; then`,
+		`if [[ "$(stat -c '%u:%g' "$runtime_dir")" != "$uid:$gid" ]]; then`,
+		`sudo loginctl enable-linger "$native_user"`,
+		`sudo systemctl start "user@$uid.service"`,
+	} {
+		index := strings.Index(wrapper, ordered)
+		if index < 0 || index <= previous {
+			fail("native lifecycle wrapper does not retain reviewed evidence and dedicated-runtime ordering at %q", ordered)
+		}
+		previous = index
+	}
+	cleanupData, err := os.ReadFile("scripts/cleanup-native-lifecycle-linux.sh")
+	check(err)
+	cleanup := string(cleanupData)
+	for _, required := range []string{
+		`sudo systemctl stop "user@${native_uid}.service"`,
+		`manager_state="$(sudo systemctl show "user@${native_uid}.service" --property=ActiveState --value 2>/dev/null)"`,
+		`sudo systemctl stop "user-runtime-dir@${native_uid}.service"`,
+		`runtime_dir_state="$(sudo systemctl show "user-runtime-dir@${native_uid}.service" --property=ActiveState --value 2>/dev/null)"`,
+		`if [[ "$manager_state" == "inactive" && "$runtime_dir_state" == "inactive" && ! -e "$runtime_dir" && ! -L "$runtime_dir" ]]; then`,
+		`sudo loginctl disable-linger "$native_user" >/dev/null 2>&1 || true`,
+		`if linger_state="$(sudo loginctl show-user "$native_user" --property=Linger --value 2>/dev/null)"; then`,
+		`elif [[ ! -e "$linger_record" && ! -L "$linger_record" && ! -e "$linger_marker" && ! -L "$linger_marker" ]]; then`,
+	} {
+		if !strings.Contains(cleanup, required) {
+			fail("Linux cleanup helper is missing reviewed runtime or linger fragment %q", required)
+		}
+	}
+	previous = -1
+	for _, ordered := range []string{
+		`sudo systemctl stop "user@${native_uid}.service"`,
+		`manager_state="$(sudo systemctl show "user@${native_uid}.service" --property=ActiveState --value 2>/dev/null)"`,
+		`sudo systemctl stop "user-runtime-dir@${native_uid}.service"`,
+		`runtime_dir_state="$(sudo systemctl show "user-runtime-dir@${native_uid}.service" --property=ActiveState --value 2>/dev/null)"`,
+		`sudo loginctl disable-linger "$native_user" >/dev/null 2>&1 || true`,
+		`if linger_state="$(sudo loginctl show-user "$native_user" --property=Linger --value 2>/dev/null)"; then`,
+	} {
+		index := strings.Index(cleanup, ordered)
+		if index < 0 || index <= previous {
+			fail("Linux cleanup helper does not retain reviewed user-runtime cleanup ordering at %q", ordered)
+		}
+		previous = index
+	}
 	for _, required := range []string{`test "$release_run_attempt" = "1"`, `test "${GITHUB_SHA:?GITHUB_SHA is required}" = "$expected_sha"`, `test "${GITHUB_REF:?GITHUB_REF is required}" = "refs/tags/$release_tag"`, `--release-kaiten-sha256 "$release_kaiten_sha256"`, `--release-kaiten-mcp-sha256 "$release_kaiten_mcp_sha256"`} {
 		if !strings.Contains(wrapper, required) {
 			fail("native lifecycle wrapper is missing exact release binding %q", required)

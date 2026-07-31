@@ -98,17 +98,27 @@ if ! sudo systemctl stop "user@${native_uid}.service"; then
   failed=true
 fi
 manager_state="$(sudo systemctl show "user@${native_uid}.service" --property=ActiveState --value 2>/dev/null)"
-if [[ "$manager_state" == "inactive" ]]; then
+if ! sudo systemctl stop "user-runtime-dir@${native_uid}.service"; then
+  failed=true
+fi
+runtime_dir_state="$(sudo systemctl show "user-runtime-dir@${native_uid}.service" --property=ActiveState --value 2>/dev/null)"
+runtime_dir="/run/user/$native_uid"
+if [[ "$manager_state" == "inactive" && "$runtime_dir_state" == "inactive" && ! -e "$runtime_dir" && ! -L "$runtime_dir" ]]; then
   user_manager_stopped=true
 else
   failed=true
 fi
 
-if ! sudo loginctl disable-linger "$native_user"; then
-  failed=true
-fi
-linger_state="$(sudo loginctl show-user "$native_user" --property=Linger --value 2>/dev/null)"
-if [[ "$linger_state" == "no" && ! -e "/var/lib/systemd/linger/$native_user" ]]; then
+sudo loginctl disable-linger "$native_user" >/dev/null 2>&1 || true
+linger_marker="/var/lib/systemd/linger/$native_user"
+linger_record="/run/systemd/users/$native_uid"
+if linger_state="$(sudo loginctl show-user "$native_user" --property=Linger --value 2>/dev/null)"; then
+  if [[ "$linger_state" == "no" && ! -e "$linger_marker" && ! -L "$linger_marker" ]]; then
+    linger_disabled=true
+  else
+    failed=true
+  fi
+elif [[ ! -e "$linger_record" && ! -L "$linger_record" && ! -e "$linger_marker" && ! -L "$linger_marker" ]]; then
   linger_disabled=true
 else
   failed=true

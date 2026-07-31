@@ -112,6 +112,7 @@ func childEnvironment(profile, tenantURL, token string) []string {
 
 type capture struct {
 	label, command, stdout, stderr string
+	failureTrigger                 string
 	exitCode                       int
 	duration                       time.Duration
 }

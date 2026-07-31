@@ -106,3 +106,27 @@ func TestReleaseBindingRequiresExactTagVersionAndNativeArchive(t *testing.T) {
 		t.Fatal("release tag/version drift was accepted")
 	}
 }
+
+func TestReviewedRollbackTriggerRequiresExactExitAndStderr(t *testing.T) {
+	tests := []struct {
+		name        string
+		exitCode    int
+		stderr      string
+		wantTrigger string
+		wantOK      bool
+	}{
+		{name: "health timeout", exitCode: 1, stderr: v3HealthTimeoutFailure, wantTrigger: rollbackTriggerHealth, wantOK: true},
+		{name: "activation failure", exitCode: 1, stderr: v3ActivationFailure, wantTrigger: rollbackTriggerActivation, wantOK: true},
+		{name: "wrong exit", exitCode: 2, stderr: v3ActivationFailure},
+		{name: "arbitrary failure", exitCode: 1, stderr: "error: filesystem unavailable"},
+		{name: "near miss", exitCode: 1, stderr: "error: installation failed: activate service: exit status 2"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			trigger, ok := reviewedRollbackTrigger(test.exitCode, test.stderr)
+			if trigger != test.wantTrigger || ok != test.wantOK {
+				t.Fatalf("reviewedRollbackTrigger() = %q, %t; want %q, %t", trigger, ok, test.wantTrigger, test.wantOK)
+			}
+		})
+	}
+}

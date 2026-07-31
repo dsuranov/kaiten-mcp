@@ -28,6 +28,21 @@ func TestRealisticFiveDirectoryBundlePassesAggregateChecks(t *testing.T) {
 	}
 }
 
+func TestActivationFailurePassesAsReviewedRollbackTrigger(t *testing.T) {
+	root := writeValidBundle(t)
+	for _, reviewed := range reviewedTargets {
+		path := filepath.Join(root, reviewed.directory, "commands.json")
+		var commands []commandEvidence
+		readTestJSON(t, path, &commands)
+		commands[2].Stderr = v3ActivationFailure
+		commands[2].FailureTrigger = rollbackTriggerActivation
+		writeTestJSON(t, path, commands)
+	}
+	if _, err := validateBundle(root, aggregateTestCommit); err != nil {
+		t.Fatalf("reviewed activation rollback trigger failed: %v", err)
+	}
+}
+
 func TestReviewedReleaseWorkflowPathFormsPass(t *testing.T) {
 	for _, workflowPath := range []string{
 		".github/workflows/release.yml",
@@ -112,6 +127,16 @@ func TestAggregateRejectsSemanticFalsePositiveMutations(t *testing.T) {
 				var commands []map[string]any
 				readTestJSON(t, path, &commands)
 				commands[2]["stderr"] = "error: filesystem unavailable"
+				writeTestJSON(t, path, commands)
+			},
+		},
+		{
+			name: "v3 failure trigger detached from stderr",
+			mutate: func(t *testing.T, root string) {
+				path := linuxArtifact(root, "commands.json")
+				var commands []map[string]any
+				readTestJSON(t, path, &commands)
+				commands[2]["failure_trigger"] = rollbackTriggerActivation
 				writeTestJSON(t, path, commands)
 			},
 		},
@@ -384,7 +409,7 @@ func writeValidArtifactDirectory(t *testing.T, root string, reviewed target, ind
 	writeTestJSON(t, filepath.Join(directory, "commands.json"), []commandEvidence{
 		{Step: "install-v1", Command: binaryCommand + " install", ExitCode: 0, DurationNS: int64(time.Second), Stdout: "installed native-v1"},
 		{Step: "healthy-update-v2", Command: binaryCommand + " install", ExitCode: 0, DurationNS: int64(time.Second), Stdout: "installed shipped v2"},
-		{Step: "bad-service-update-v3", Command: binaryCommand + " install", ExitCode: 1, DurationNS: int64(10 * time.Second), Stderr: `error: installation failed: verify installed service version "native-v3": service did not become healthy before the readiness deadline`},
+		{Step: "bad-service-update-v3", Command: binaryCommand + " install", ExitCode: 1, DurationNS: int64(10 * time.Second), Stderr: v3HealthTimeoutFailure, FailureTrigger: rollbackTriggerHealth},
 		{Step: "uninstall-first", Command: binaryCommand + " uninstall", ExitCode: 0, DurationNS: int64(time.Second), Stdout: "uninstalled"},
 		{Step: "uninstall-second", Command: binaryCommand + " uninstall", ExitCode: 0, DurationNS: int64(time.Second), Stdout: "already absent"},
 	})

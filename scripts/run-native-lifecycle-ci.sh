@@ -142,7 +142,10 @@ if [[ -e "$evidence" || -L "$evidence" ]]; then
   echo "refusing to reuse native lifecycle evidence destination $evidence" >&2
   exit 1
 fi
-mkdir -m 0700 "$evidence"
+mkdir "$evidence"
+if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
+  chmod 0700 "$evidence"
+fi
 {
   echo "runner_label=$runner_label"
   echo "runner_id=$runner_id"
@@ -204,6 +207,7 @@ created_user=false
 stage_created=false
 cleanup_complete=false
 uid=""
+gid=""
 finish_linux() {
   local original_status=$?
   local copy_status=0
@@ -259,11 +263,26 @@ stage_created=true
 sudo useradd --home-dir "$profile" --no-create-home --shell /bin/bash "$native_user"
 created_user=true
 uid="$(id -u "$native_user")"
+gid="$(id -g "$native_user")"
+if [[ ! "$uid" =~ ^[1-9][0-9]*$ || ! "$gid" =~ ^[1-9][0-9]*$ ]]; then
+  echo "dedicated Linux lifecycle user has an invalid numeric identity" >&2
+  exit 1
+fi
 sudo install -d -m 0700 -o "$native_user" -g "$native_user" "$profile" "$stage/build" "$stage/evidence"
+sudo systemctl start "user-runtime-dir@$uid.service"
+runtime_dir="/run/user/$uid"
+if [[ ! -d "$runtime_dir" || -L "$runtime_dir" ]]; then
+  echo "dedicated user's runtime directory is unavailable or symbolic" >&2
+  exit 1
+fi
+if [[ "$(stat -c '%u:%g' "$runtime_dir")" != "$uid:$gid" ]]; then
+  echo "dedicated user's runtime directory has unexpected ownership" >&2
+  exit 1
+fi
 sudo loginctl enable-linger "$native_user"
 sudo systemctl start "user@$uid.service"
 
-bus="/run/user/$uid/bus"
+bus="$runtime_dir/bus"
 for _ in $(seq 1 30); do
   [[ -S "$bus" ]] && break
   sleep 1

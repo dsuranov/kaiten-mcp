@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+const (
+	v3HealthTimeoutFailure    = `error: installation failed: verify installed service version "native-v3": service did not become healthy before the readiness deadline`
+	v3ActivationFailure       = "error: installation failed: activate service: exit status 1"
+	rollbackTriggerHealth     = "health-timeout"
+	rollbackTriggerActivation = "activation-failure"
+)
+
 // Config identifies the local v1/bad-v3 fixtures, exact shipped v2 binaries,
 // their release provenance, and disposable lifecycle output locations.
 type Config struct {
@@ -431,7 +438,7 @@ func (h *harness) run(ctx context.Context) error {
 	if err := h.captureServiceFiles(); err != nil {
 		return fmt.Errorf("capture service definition and log: %w", err)
 	}
-	h.check("failed-update-rollback", "native-v3 produced no health endpoint; installer failed and restored healthy "+h.v2Version)
+	h.check("failed-update-rollback", "reviewed native-v3 failure triggered installer rollback and restored healthy "+h.v2Version)
 
 	if err := h.invoke(ctx, "uninstall-first", h.config.V2, []string{"uninstall"}, "y\n", environment, false); err != nil {
 		return err
@@ -497,11 +504,12 @@ func (h *harness) invoke(parent context.Context, label, executable string, argum
 		if err == nil {
 			return fmt.Errorf("%s unexpectedly succeeded", label)
 		}
-		wantFailure := `error: installation failed: verify installed service version "native-v3": service did not become healthy before the readiness deadline`
-		if captured.exitCode != 1 || strings.TrimSpace(captured.stderr) != wantFailure {
-			return fmt.Errorf("%s did not fail through the intended v3 health path", label)
+		trigger, reviewed := reviewedRollbackTrigger(captured.exitCode, captured.stderr)
+		if !reviewed {
+			return fmt.Errorf("%s did not fail through a reviewed v3 rollback trigger", label)
 		}
-		h.check(label, "expected exit was nonzero; redacted output: "+redacted)
+		h.captures[len(h.captures)-1].failureTrigger = trigger
+		h.check(label, "expected exit 1 through "+trigger+"; redacted output: "+redacted)
 		return nil
 	}
 	if err != nil {
@@ -509,6 +517,20 @@ func (h *harness) invoke(parent context.Context, label, executable string, argum
 	}
 	h.check(label, "exit 0; redacted output: "+redacted)
 	return nil
+}
+
+func reviewedRollbackTrigger(exitCode int, stderr string) (string, bool) {
+	if exitCode != 1 {
+		return "", false
+	}
+	switch strings.TrimSpace(stderr) {
+	case v3HealthTimeoutFailure:
+		return rollbackTriggerHealth, true
+	case v3ActivationFailure:
+		return rollbackTriggerActivation, true
+	default:
+		return "", false
+	}
 }
 
 func verifyInstalledVersion(ctx context.Context, binary, version, directory string, environment []string) error {

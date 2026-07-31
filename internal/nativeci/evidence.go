@@ -102,12 +102,13 @@ func validateEvidencePayload(payload []byte, forbidden string) error {
 }
 
 type commandEvidence struct {
-	Step       string `json:"step"`
-	Command    string `json:"command"`
-	ExitCode   int    `json:"exit_code"`
-	DurationNS int64  `json:"duration_ns"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
+	Step           string `json:"step"`
+	Command        string `json:"command"`
+	ExitCode       int    `json:"exit_code"`
+	DurationNS     int64  `json:"duration_ns"`
+	Stdout         string `json:"stdout,omitempty"`
+	Stderr         string `json:"stderr,omitempty"`
+	FailureTrigger string `json:"failure_trigger,omitempty"`
 }
 
 func writeCommandEvidence(path string, captures []capture, token string, replacements map[string]string) error {
@@ -125,7 +126,7 @@ func writeCommandEvidence(path string, captures []capture, token string, replace
 		if err != nil {
 			return err
 		}
-		commands = append(commands, commandEvidence{Step: captured.label, Command: command, ExitCode: captured.exitCode, DurationNS: captured.duration.Nanoseconds(), Stdout: stdout, Stderr: stderr})
+		commands = append(commands, commandEvidence{Step: captured.label, Command: command, ExitCode: captured.exitCode, DurationNS: captured.duration.Nanoseconds(), Stdout: stdout, Stderr: stderr, FailureTrigger: captured.failureTrigger})
 	}
 	return writeJSONArtifact(path, commands, token)
 }

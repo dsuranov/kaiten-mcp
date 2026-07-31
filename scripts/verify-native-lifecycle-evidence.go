@@ -24,12 +24,16 @@ import (
 )
 
 const (
-	maxEvidenceSize = 8 * 1024 * 1024
-	healthEndpoint  = "http://127.0.0.1:8100/health"
-	mcpEndpoint     = "http://127.0.0.1:8100/mcp"
-	goVersion       = "go1.26.5"
-	serviceLabel    = "io.github.dsuranov.kaiten-mcp"
-	serviceUnit     = "kaiten-mcp.service"
+	maxEvidenceSize           = 8 * 1024 * 1024
+	healthEndpoint            = "http://127.0.0.1:8100/health"
+	mcpEndpoint               = "http://127.0.0.1:8100/mcp"
+	goVersion                 = "go1.26.5"
+	serviceLabel              = "io.github.dsuranov.kaiten-mcp"
+	serviceUnit               = "kaiten-mcp.service"
+	v3HealthTimeoutFailure    = `error: installation failed: verify installed service version "native-v3": service did not become healthy before the readiness deadline`
+	v3ActivationFailure       = "error: installation failed: activate service: exit status 1"
+	rollbackTriggerHealth     = "health-timeout"
+	rollbackTriggerActivation = "activation-failure"
 )
 
 type target struct {
@@ -587,12 +591,13 @@ func validateClientState(name string, state clientState, registered bool) error 
 }
 
 type commandEvidence struct {
-	Step       string `json:"step"`
-	Command    string `json:"command"`
-	ExitCode   int    `json:"exit_code"`
-	DurationNS int64  `json:"duration_ns"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
+	Step           string `json:"step"`
+	Command        string `json:"command"`
+	ExitCode       int    `json:"exit_code"`
+	DurationNS     int64  `json:"duration_ns"`
+	Stdout         string `json:"stdout,omitempty"`
+	Stderr         string `json:"stderr,omitempty"`
+	FailureTrigger string `json:"failure_trigger,omitempty"`
 }
 
 func validateCommands(data []byte, reviewed target) error {
@@ -606,7 +611,10 @@ func validateCommands(data []byte, reviewed target) error {
 		binary += ".exe"
 	}
 	wantCommands := []string{binary + " install", binary + " install", binary + " install", binary + " uninstall", binary + " uninstall"}
-	const v3Failure = `error: installation failed: verify installed service version "native-v3": service did not become healthy before the readiness deadline`
+	reviewedFailures := map[string]string{
+		v3HealthTimeoutFailure: rollbackTriggerHealth,
+		v3ActivationFailure:    rollbackTriggerActivation,
+	}
 	if len(commands) != len(wantSteps) {
 		return fmt.Errorf("commands.json contains %d commands, want %d", len(commands), len(wantSteps))
 	}
@@ -618,10 +626,10 @@ func validateCommands(data []byte, reviewed target) error {
 			return fmt.Errorf("commands.json command %s contains unbounded captured output", command.Step)
 		}
 		if index == 2 {
-			if command.ExitCode != 1 || command.Stderr != v3Failure {
-				return errors.New("commands.json bad v3 update is not the exact bounded health-check failure")
+			if command.ExitCode != 1 || command.FailureTrigger == "" || reviewedFailures[command.Stderr] != command.FailureTrigger {
+				return errors.New("commands.json bad v3 update is not an exact reviewed rollback trigger")
 			}
-		} else if command.ExitCode != 0 || command.Stderr != "" {
+		} else if command.ExitCode != 0 || command.Stderr != "" || command.FailureTrigger != "" {
 			return fmt.Errorf("commands.json command %s is not an exact successful lifecycle invocation", command.Step)
 		}
 	}
