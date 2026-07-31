@@ -45,7 +45,7 @@ type Evidence struct {
 func newEvidence(label, commit string, now time.Time) Evidence {
 	attempt, _ := strconv.Atoi(os.Getenv("GITHUB_RUN_ATTEMPT"))
 	return Evidence{
-		Schema: "kaiten-native-lifecycle/v1", Result: "failed", RunnerLabel: label,
+		Schema: "kaiten-native-lifecycle/v2", Result: "failed", RunnerLabel: label,
 		RunnerImageOS: os.Getenv("ImageOS"), RunnerImageVersion: os.Getenv("ImageVersion"),
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GoVersion: runtime.Version(), Commit: commit,
 		WorkflowRunID: os.Getenv("GITHUB_RUN_ID"), WorkflowRunAttempt: attempt,
@@ -102,11 +102,12 @@ func validateEvidencePayload(payload []byte, forbidden string) error {
 }
 
 type commandEvidence struct {
-	Step     string `json:"step"`
-	Command  string `json:"command"`
-	ExitCode int    `json:"exit_code"`
-	Stdout   string `json:"stdout,omitempty"`
-	Stderr   string `json:"stderr,omitempty"`
+	Step       string `json:"step"`
+	Command    string `json:"command"`
+	ExitCode   int    `json:"exit_code"`
+	DurationNS int64  `json:"duration_ns"`
+	Stdout     string `json:"stdout,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
 }
 
 func writeCommandEvidence(path string, captures []capture, token string, replacements map[string]string) error {
@@ -124,7 +125,7 @@ func writeCommandEvidence(path string, captures []capture, token string, replace
 		if err != nil {
 			return err
 		}
-		commands = append(commands, commandEvidence{Step: captured.label, Command: command, ExitCode: captured.exitCode, Stdout: stdout, Stderr: stderr})
+		commands = append(commands, commandEvidence{Step: captured.label, Command: command, ExitCode: captured.exitCode, DurationNS: captured.duration.Nanoseconds(), Stdout: stdout, Stderr: stderr})
 	}
 	return writeJSONArtifact(path, commands, token)
 }

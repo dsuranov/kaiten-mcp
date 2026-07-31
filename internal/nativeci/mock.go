@@ -7,18 +7,22 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 type mockAPI struct {
-	server       *http.Server
-	listener     net.Listener
-	token        string
-	mu           sync.Mutex
-	authorized   int
-	unauthorized int
+	server        *http.Server
+	listener      net.Listener
+	token         string
+	mu            sync.Mutex
+	authorized    int
+	unauthorized  int
+	lastMethod    string
+	lastPath      string
+	lastAuthValid bool
 }
 
 func startMockAPI(token string) (*mockAPI, error) {
@@ -47,6 +51,9 @@ func (m *mockAPI) Close() error {
 func (m *mockAPI) handle(writer http.ResponseWriter, request *http.Request) {
 	authorized := request.Header.Get("Authorization") == "Bearer "+m.token
 	m.mu.Lock()
+	m.lastMethod = request.Method
+	m.lastPath = request.URL.Path
+	m.lastAuthValid = authorized
 	if authorized {
 		m.authorized++
 	} else {
@@ -80,6 +87,18 @@ func (m *mockAPI) AuthorizedCount() int {
 	return m.authorized
 }
 
+type mockSnapshot struct {
+	authorized, unauthorized int
+	method, path             string
+	authHeaderValid          bool
+}
+
+func (m *mockAPI) Snapshot() mockSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return mockSnapshot{authorized: m.authorized, unauthorized: m.unauthorized, method: m.lastMethod, path: m.lastPath, authHeaderValid: m.lastAuthValid}
+}
+
 type rpcEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -87,7 +106,14 @@ type rpcEnvelope struct {
 	Error   json.RawMessage `json:"error"`
 }
 
-func proveMCP(ctx context.Context, client *http.Client, endpoint, expectedVersion string) error {
+var expectedReadOnlyToolNames = []string{
+	"get_board", "get_board_structure", "get_card", "get_card_checklists", "get_card_children",
+	"get_current_user", "get_member_cards", "get_my_cards", "get_responsible_cards", "get_server_info",
+	"get_space", "list_boards", "list_card_types", "list_custom_properties", "list_spaces", "list_tags",
+	"list_users", "search_cards",
+}
+
+func proveMCP(ctx context.Context, client *http.Client, endpoint, expectedVersion string, retainedNames ...*[]string) error {
 	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"native-lifecycle","version":"1"}}}`
 	response, body, err := postMCP(ctx, client, endpoint, "", "", initialize)
 	if err != nil {
@@ -136,11 +162,16 @@ func proveMCP(ctx context.Context, client *http.Client, endpoint, expectedVersio
 		return errors.New("tools/list result was invalid")
 	}
 	readTool, writeTool := false, false
+	toolNames := make([]string, 0, len(toolList.Tools))
 	for _, tool := range toolList.Tools {
 		readTool = readTool || tool.Name == "get_current_user"
 		writeTool = writeTool || !tool.Annotations.ReadOnly
+		toolNames = append(toolNames, tool.Name)
 	}
-	if !readTool || writeTool {
+	sort.Strings(toolNames)
+	wantNames := append([]string(nil), expectedReadOnlyToolNames...)
+	sort.Strings(wantNames)
+	if !readTool || writeTool || len(toolNames) != len(wantNames) || strings.Join(toolNames, "\n") != strings.Join(wantNames, "\n") {
 		return errors.New("native installation did not expose the expected read-only tool set")
 	}
 	call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_current_user","arguments":{}}}`
@@ -165,6 +196,9 @@ func proveMCP(ctx context.Context, client *http.Client, endpoint, expectedVersio
 	}
 	if err := json.Unmarshal(called.Result, &callResult); err != nil || !callResult.StructuredContent.OK || callResult.StructuredContent.Data.ID != 4242 || callResult.StructuredContent.Meta.Source != "kaiten" {
 		return errors.New("get_current_user did not return the authenticated mock object")
+	}
+	if len(retainedNames) > 0 && retainedNames[0] != nil {
+		*retainedNames[0] = append([]string(nil), toolNames...)
 	}
 	return nil
 }

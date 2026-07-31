@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -111,9 +113,11 @@ func childEnvironment(profile, tenantURL, token string) []string {
 type capture struct {
 	label, command, stdout, stderr string
 	exitCode                       int
+	duration                       time.Duration
 }
 
 func runCaptured(ctx context.Context, executable string, arguments []string, input string, directory string, environment []string) (capture, error) {
+	started := time.Now()
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = directory
 	command.Env = environment
@@ -122,7 +126,7 @@ func runCaptured(ctx context.Context, executable string, arguments []string, inp
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
 	commandName := filepath.Base(executable) + " " + strings.Join(arguments, " ")
-	result := capture{label: commandName, command: commandName, stdout: stdout.String(), stderr: stderr.String()}
+	result := capture{label: commandName, command: commandName, stdout: stdout.String(), stderr: stderr.String(), duration: time.Since(started)}
 	if err == nil {
 		return result, nil
 	}
@@ -133,6 +137,41 @@ func runCaptured(ctx context.Context, executable string, arguments []string, inp
 	}
 	result.exitCode = -1
 	return result, fmt.Errorf("run %s: %w", result.label, err)
+}
+
+func serviceProcessID(ctx context.Context, paths layout) (int, error) {
+	var output string
+	var err error
+	switch runtime.GOOS {
+	case "darwin":
+		output, err = managerStatus(ctx, paths)
+		if err != nil {
+			return 0, err
+		}
+		match := regexp.MustCompile(`(?m)^\s*pid = ([0-9]+)\s*$`).FindStringSubmatch(output)
+		if len(match) != 2 {
+			return 0, errors.New("launchctl status omitted the active process ID")
+		}
+		output = match[1]
+	case "linux":
+		output, err = outputQuiet(ctx, "systemctl", "--user", "show", "--property=MainPID", "--value", serviceUnit)
+		if err != nil {
+			return 0, err
+		}
+	case "windows":
+		script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $target='%s'; $found=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target }); if($found.Count -ne 1){exit 1}; [Console]::Out.Write($found[0].ProcessId)`, psQuote(paths.binary))
+		output, err = outputQuiet(ctx, "powershell", "-NoProfile", "-Command", script)
+		if err != nil {
+			return 0, err
+		}
+	default:
+		return 0, errors.New("unsupported service manager")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil || pid < 1 {
+		return 0, fmt.Errorf("native manager returned invalid process ID %q", strings.TrimSpace(output))
+	}
+	return pid, nil
 }
 
 func runQuiet(ctx context.Context, name string, arguments ...string) error {
@@ -183,44 +222,76 @@ func requireNonRootLinux() error {
 func serviceAbsent(ctx context.Context, paths layout) error {
 	switch runtime.GOOS {
 	case "darwin":
-		uid, err := currentUID()
+		present, err := launchdServicePresent(ctx)
 		if err != nil {
 			return err
 		}
-		if runQuiet(ctx, "launchctl", "print", "gui/"+uid+"/"+serviceLabel) == nil {
+		if present {
 			return errors.New("fixed launchd label already exists")
 		}
 	case "linux":
 		state, err := outputQuiet(ctx, "systemctl", "--user", "show", "--property=LoadState", "--value", serviceUnit)
-		if err == nil && state != "not-found" && state != "" {
+		if err != nil {
+			return fmt.Errorf("probe fixed systemd unit identity: %w", err)
+		}
+		if state != "not-found" {
 			return fmt.Errorf("fixed systemd unit already exists with load state %s", state)
 		}
 	case "windows":
 		if fileExists(paths.definition) {
 			return errors.New("isolated Windows Startup entry already exists")
 		}
-		if windowsProcessExists(ctx, paths.binary) {
+		present, err := windowsProcessExists(ctx, paths.binary)
+		if err != nil {
+			return err
+		}
+		if present {
 			return errors.New("isolated Windows service process already exists")
 		}
 	}
 	return nil
 }
 
+func launchdServicePresent(ctx context.Context) (bool, error) {
+	uid, err := currentUID()
+	if err != nil {
+		return false, err
+	}
+	command := exec.CommandContext(ctx, "launchctl", "print", "gui/"+uid+"/"+serviceLabel)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitError *exec.ExitError
+	absentMarker := fmt.Sprintf(`Could not find service "%s" in domain for user gui: %s`, serviceLabel, uid)
+	if errors.As(err, &exitError) && exitError.ExitCode() == 113 && strings.Contains(string(output), absentMarker) {
+		return false, nil
+	}
+	return false, fmt.Errorf("probe fixed launchd label: %w: %s", err, strings.TrimSpace(string(output)))
+}
+
 func serviceActive(ctx context.Context, paths layout) error {
 	switch runtime.GOOS {
 	case "darwin":
-		uid, err := currentUID()
+		present, err := launchdServicePresent(ctx)
 		if err != nil {
 			return err
 		}
-		return runQuiet(ctx, "launchctl", "print", "gui/"+uid+"/"+serviceLabel)
+		if !present {
+			return errors.New("fixed launchd label is not active")
+		}
+		return nil
 	case "linux":
 		if err := runQuiet(ctx, "systemctl", "--user", "is-active", "--quiet", serviceUnit); err != nil {
 			return err
 		}
 		return runQuiet(ctx, "systemctl", "--user", "is-enabled", "--quiet", serviceUnit)
 	case "windows":
-		if !fileExists(paths.definition) || !windowsProcessExists(ctx, paths.binary) {
+		present, err := windowsProcessExists(ctx, paths.binary)
+		if err != nil {
+			return err
+		}
+		if !fileExists(paths.definition) || !present {
 			return errors.New("Windows Startup activation is not running")
 		}
 		return nil
@@ -240,7 +311,7 @@ func managerStatus(ctx context.Context, paths layout) (string, error) {
 	case "linux":
 		return combinedOutput(ctx, "systemctl", "--user", "status", "--no-pager", "--full", serviceUnit)
 	case "windows":
-		script := fmt.Sprintf(`$target='%s'; $found=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | Select-Object ProcessId,ExecutablePath,CommandLine; if(!$found){exit 1}; $found | ConvertTo-Json -Depth 3`, psQuote(paths.binary))
+		script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $target='%s'; $found=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | Select-Object ProcessId,ExecutablePath,CommandLine; if(!$found){exit 1}; $found | ConvertTo-Json -Depth 3`, psQuote(paths.binary))
 		return combinedOutput(ctx, "powershell", "-NoProfile", "-Command", script)
 	default:
 		return "", errors.New("unsupported service manager")
@@ -270,33 +341,76 @@ func restartService(ctx context.Context, paths layout) error {
 func stopNativeService(ctx context.Context, paths layout) error {
 	switch runtime.GOOS {
 	case "darwin":
-		if !fileExists(paths.definition) {
-			return nil
+		if fileExists(paths.definition) {
+			uid, err := currentUID()
+			if err != nil {
+				return err
+			}
+			if err := runQuiet(ctx, "launchctl", "bootout", "gui/"+uid, paths.definition); err != nil {
+				return err
+			}
 		}
-		uid, err := currentUID()
-		if err != nil {
+		return serviceAbsent(ctx, paths)
+	case "linux":
+		if fileExists(paths.definition) {
+			if err := runQuiet(ctx, "systemctl", "--user", "disable", "--now", serviceUnit); err != nil {
+				return err
+			}
+		}
+		return serviceAbsent(ctx, paths)
+	case "windows":
+		if err := stopWindowsProcess(ctx, paths.binary); err != nil {
 			return err
 		}
-		return runQuiet(ctx, "launchctl", "bootout", "gui/"+uid, paths.definition)
-	case "linux":
-		if !fileExists(paths.definition) {
-			return nil
-		}
-		return runQuiet(ctx, "systemctl", "--user", "disable", "--now", serviceUnit)
-	case "windows":
-		return stopWindowsProcess(ctx, paths.binary)
+		return serviceAbsent(ctx, paths)
 	default:
 		return nil
 	}
 }
 
-func windowsProcessExists(ctx context.Context, binary string) bool {
-	script := fmt.Sprintf(`$target='%s'; $found=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target }; if($found){exit 0}else{exit 1}`, psQuote(binary))
-	return runQuiet(ctx, "powershell", "-NoProfile", "-Command", script) == nil
+func windowsProcessExists(ctx context.Context, binary string) (bool, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $target='%s'; $found=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target }; if($found){[Console]::Out.Write('present')}else{[Console]::Out.Write('absent')}`, psQuote(binary))
+	output, err := outputQuiet(ctx, "powershell", "-NoProfile", "-Command", script)
+	if err != nil {
+		return false, fmt.Errorf("probe isolated Windows service process: %w", err)
+	}
+	switch output {
+	case "present":
+		return true, nil
+	case "absent":
+		return false, nil
+	default:
+		return false, fmt.Errorf("Windows process probe returned %q", output)
+	}
+}
+
+func nativeProcessAbsent(ctx context.Context, binary string) error {
+	if runtime.GOOS == "windows" {
+		present, err := windowsProcessExists(ctx, binary)
+		if err != nil {
+			return err
+		}
+		if present {
+			return errors.New("isolated Windows service process still exists")
+		}
+		return nil
+	}
+	pattern := "^" + regexp.QuoteMeta(binary) + "([[:space:]]|$)"
+	command := exec.CommandContext(ctx, "pgrep", "-f", pattern)
+	command.Stdout, command.Stderr = io.Discard, io.Discard
+	err := command.Run()
+	if err == nil {
+		return errors.New("profile-local native service process still exists")
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
+		return nil
+	}
+	return fmt.Errorf("probe profile-local native process: %w", err)
 }
 
 func stopWindowsProcess(ctx context.Context, binary string) error {
-	script := fmt.Sprintf(`$target='%s'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; exit 0`, psQuote(binary))
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'; $target='%s'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`, psQuote(binary))
 	return runQuiet(ctx, "powershell", "-NoProfile", "-Command", script)
 }
 

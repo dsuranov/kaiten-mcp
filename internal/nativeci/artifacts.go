@@ -2,12 +2,14 @@ package nativeci
 
 import (
 	"context"
+	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -39,11 +41,14 @@ var requiredLifecycleArtifacts = []string{
 	"mcp-auth-rollback-v2.json",
 	"mcp-auth-v1.json",
 	"permissions.json",
+	"release-binaries.json",
 	"remaining-files.json",
 	"rollback-backup-permissions.json",
 	"rollback-hashes.json",
 	"service-definition.txt",
 	"service-log.txt",
+	"manager-states.json",
+	"post-harness-cleanup.json",
 }
 
 // RequiredEvidenceArtifacts returns the reviewed companion-file contract used
@@ -118,18 +123,116 @@ func (h *harness) captureHealthAt(ctx context.Context, name, endpoint, expectedV
 		return err
 	}
 	artifact.Endpoint = endpoint
-	if response.StatusCode != http.StatusOK || artifact.Status != "ok" || artifact.Version != expectedVersion || artifact.Runtime == "" {
+	if response.StatusCode != http.StatusOK || artifact.Status != "ok" || artifact.Version != expectedVersion || artifact.Runtime != runtime.Version() || artifact.Runtime != "go1.26.5" {
 		return fmt.Errorf("captured health identity does not match %s", expectedVersion)
 	}
 	return h.writeJSONArtifact(name, artifact)
 }
 
-func (h *harness) captureManagerStatus(ctx context.Context, name string) error {
+func (h *harness) captureManagerStatus(ctx context.Context, name, stage string) (int, error) {
 	status, err := managerStatus(ctx, h.paths)
 	if err != nil {
+		return 0, err
+	}
+	pid, err := serviceProcessID(ctx, h.paths)
+	if err != nil {
+		return 0, err
+	}
+	if err := h.writeTextArtifact(name, status); err != nil {
+		return 0, err
+	}
+	h.managers = append(h.managers, managerEvidence{Stage: stage, Manager: nativeManagerName(), Identity: nativeManagerIdentity(), Active: true, PID: pid})
+	return pid, nil
+}
+
+func (h *harness) captureFinalManagerStatus(ctx context.Context) error {
+	if err := serviceAbsent(ctx, h.paths); err != nil {
 		return err
 	}
-	return h.writeTextArtifact(name, status)
+	if err := nativeProcessAbsent(ctx, h.paths.binary); err != nil {
+		return err
+	}
+	if err := requireServicePortFree(); err != nil {
+		return err
+	}
+	status := fmt.Sprintf("manager=%s\nidentity=%s\nstate=absent\nexecutable=%s\nprocess=absent\nport_8100=free", nativeManagerName(), nativeManagerIdentity(), h.paths.binary)
+	if err := h.writeTextArtifact("manager-final.txt", status); err != nil {
+		return err
+	}
+	h.managers = append(h.managers, managerEvidence{Stage: "final", Manager: nativeManagerName(), Identity: nativeManagerIdentity(), Active: false, PID: 0})
+	return h.writeJSONArtifact("manager-states.json", h.managers)
+}
+
+func (h *harness) captureReleaseBinaries(ctx context.Context) error {
+	type candidate struct {
+		name, path, prefix string
+	}
+	candidates := []candidate{
+		{name: "kaiten", path: h.config.ReleaseKaiten, prefix: "kaiten "},
+		{name: "kaiten-mcp", path: h.config.V2, prefix: "kaiten-mcp "},
+	}
+	proof := architectureSmokeEvidence{
+		Schema: "kaiten-native-release-binaries/v1", ReleaseRunID: h.config.ReleaseRunID,
+		ReleaseTag: h.config.ReleaseTag, ReleaseHeadSHA: h.config.ReleaseHeadSHA,
+		ReleaseManifestSHA256: h.config.ReleaseManifestSHA256, ReleaseArchive: h.config.ReleaseArchive,
+		ReleaseArchiveSHA256: h.config.ReleaseArchiveSHA256, ReleaseArtifactName: "release-assets",
+	}
+	for _, candidate := range candidates {
+		captured, err := runCaptured(ctx, candidate.path, []string{"version"}, "", filepath.Dir(candidate.path), os.Environ())
+		if err != nil {
+			return fmt.Errorf("launch shipped %s: %w", candidate.name, err)
+		}
+		wantOutput := candidate.prefix + h.config.V2Version
+		if captured.exitCode != 0 || strings.TrimSpace(captured.stdout) != wantOutput || captured.stderr != "" {
+			return fmt.Errorf("shipped %s version output = %q, want %q", candidate.name, strings.TrimSpace(captured.stdout), wantOutput)
+		}
+		info, err := buildinfo.ReadFile(candidate.path)
+		if err != nil {
+			return fmt.Errorf("read shipped %s build identity: %w", candidate.name, err)
+		}
+		goos, goarch := "", ""
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "GOOS":
+				goos = setting.Value
+			case "GOARCH":
+				goarch = setting.Value
+			}
+		}
+		if info.GoVersion != "go1.26.5" || goos != runtime.GOOS || goarch != runtime.GOARCH {
+			return fmt.Errorf("shipped %s build identity = %s %s/%s, want go1.26.5 %s/%s", candidate.name, info.GoVersion, goos, goarch, runtime.GOOS, runtime.GOARCH)
+		}
+		digest, err := fileSHA256(candidate.path)
+		if err != nil {
+			return err
+		}
+		proof.Binaries = append(proof.Binaries, binarySmokeEvidence{
+			Name: candidate.name, SHA256: digest, VersionOutput: wantOutput, GoVersion: info.GoVersion,
+			GOOS: goos, GOARCH: goarch, Launched: true, ExitCode: captured.exitCode,
+		})
+	}
+	return h.writeJSONArtifact("release-binaries.json", proof)
+}
+
+func (h *harness) captureMCPProof(ctx context.Context, artifact, stage, expectedVersion string) error {
+	const endpoint = "http://127.0.0.1:8100/mcp"
+	before := h.mock.Snapshot()
+	var toolNames []string
+	if err := proveMCP(ctx, h.client, endpoint, expectedVersion, &toolNames); err != nil {
+		return err
+	}
+	after := h.mock.Snapshot()
+	if after.authorized != before.authorized+1 || after.unauthorized != before.unauthorized || after.method != http.MethodGet || after.path != "/api/v1/users/current" || !after.authHeaderValid {
+		return errors.New("loopback mock did not retain the exact authenticated representative read sentinel")
+	}
+	proof := mcpEvidence{
+		Stage: stage, Endpoint: endpoint, ServerVersion: expectedVersion, ProtocolVersion: "2025-06-18",
+		SessionEstablished: true, ToolNames: toolNames, ReadOnlyToolCount: len(toolNames), WriteToolCount: 0,
+		RepresentativeTool: "get_current_user", RepresentativeReadSucceeded: true,
+		AuthorizedRequestCount: after.authorized, UnauthorizedRequestCount: after.unauthorized,
+		MockMethod: after.method, MockPath: after.path, AuthHeaderValid: after.authHeaderValid,
+	}
+	return h.writeJSONArtifact(artifact, proof)
 }
 
 func (h *harness) captureClientState(name string) error {

@@ -10,8 +10,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -75,77 +77,107 @@ func verifyClientConfigs(paths layout, registered bool) error {
 	return nil
 }
 
-func verifyPermissions(ctx context.Context, paths layout) ([]string, error) {
+func verifyPermissions(ctx context.Context, paths layout) ([]permissionEvidence, error) {
 	checks := []struct {
 		role string
 		path string
 		mode fs.FileMode
 	}{
-		{"installed executable", paths.binary, 0o700},
-		{"secret environment", paths.environment, 0o600},
-		{"service definition", paths.definition, 0o600},
-		{"Claude Code configuration", paths.claudeCode, 0o600},
-		{"Claude Desktop configuration", paths.claudeDesktop, 0o600},
+		{"binary", paths.binary, 0o700},
+		{"environment", paths.environment, 0o600},
+		{"service_definition", paths.definition, 0o600},
+		{"claude_code", paths.claudeCode, 0o600},
+		{"claude_desktop", paths.claudeDesktop, 0o600},
 	}
-	result := make([]string, 0, len(checks))
+	result := make([]permissionEvidence, 0, len(checks))
 	for _, check := range checks {
-		if runtime.GOOS == "windows" {
-			if err := verifyWindowsACL(ctx, check.path); err != nil {
-				return nil, fmt.Errorf("%s ACL: %w", check.role, err)
-			}
-			result = append(result, check.role+":owner-and-SYSTEM-only")
-			continue
-		}
-		info, err := os.Stat(check.path)
+		proof, err := verifyFilePermission(ctx, check.role, check.path, check.mode)
 		if err != nil {
 			return nil, err
 		}
-		if info.Mode().Perm() != check.mode {
-			return nil, fmt.Errorf("%s mode is %04o, want %04o", check.role, info.Mode().Perm(), check.mode)
-		}
-		result = append(result, fmt.Sprintf("%s:%04o", check.role, check.mode))
+		result = append(result, proof)
 	}
 	return result, nil
 }
 
-func verifyBackupPermissions(ctx context.Context, paths layout) ([]string, error) {
+func verifyBackupPermissions(ctx context.Context, paths layout) ([]permissionEvidence, error) {
 	checks := []struct {
+		role string
 		path string
 		mode fs.FileMode
 	}{
-		{paths.binary + ".bak", 0o700},
-		{paths.environment + ".bak", 0o600},
-		{paths.definition + ".bak", 0o600},
-		{paths.claudeCode + ".bak", 0o600},
-		{paths.claudeDesktop + ".bak", 0o600},
+		{"binary", paths.binary + ".bak", 0o700},
+		{"environment", paths.environment + ".bak", 0o600},
+		{"service_definition", paths.definition + ".bak", 0o600},
+		{"claude_code", paths.claudeCode + ".bak", 0o600},
+		{"claude_desktop", paths.claudeDesktop + ".bak", 0o600},
 	}
-	result := make([]string, 0, len(checks))
+	result := make([]permissionEvidence, 0, len(checks))
 	for _, check := range checks {
-		if runtime.GOOS == "windows" {
-			if err := verifyWindowsACL(ctx, check.path); err != nil {
-				return nil, err
-			}
-			result = append(result, filepath.Base(check.path)+":owner-and-SYSTEM-only")
-			continue
-		}
-		info, err := os.Stat(check.path)
+		proof, err := verifyFilePermission(ctx, check.role, check.path, check.mode)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("backup %s: %w", filepath.Base(check.path), err)
 		}
-		if info.Mode().Perm() != check.mode {
-			return nil, fmt.Errorf("backup %s mode is %04o, want %04o", filepath.Base(check.path), info.Mode().Perm(), check.mode)
-		}
-		result = append(result, fmt.Sprintf("%s:%04o", filepath.Base(check.path), check.mode))
+		result = append(result, proof)
 	}
 	return result, nil
 }
 
-func verifyWindowsACL(ctx context.Context, path string) error {
-	script := fmt.Sprintf(`$broad=@('S-1-1-0','S-1-5-11','S-1-5-32-545'); $bad=@(); foreach($rule in (Get-Acl -LiteralPath '%s').Access){try{$sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value}catch{continue}; if($broad -contains $sid -and $rule.AccessControlType -eq 'Allow'){$bad += $sid}}; if($bad.Count -ne 0){exit 1}`, psQuote(path))
-	if err := runQuiet(ctx, "powershell", "-NoProfile", "-Command", script); err != nil {
-		return errors.New("broad read principal is allowed")
+func verifyFilePermission(ctx context.Context, role, path string, mode fs.FileMode) (permissionEvidence, error) {
+	if runtime.GOOS == "windows" {
+		return verifyWindowsACL(ctx, role, path)
 	}
-	return nil
+	info, err := os.Stat(path)
+	if err != nil {
+		return permissionEvidence{}, err
+	}
+	if info.Mode().Perm() != mode {
+		return permissionEvidence{}, fmt.Errorf("%s mode is %04o, want %04o", role, info.Mode().Perm(), mode)
+	}
+	owned, err := ownedByCurrentUser(info)
+	if err != nil {
+		return permissionEvidence{}, err
+	}
+	if !owned {
+		return permissionEvidence{}, fmt.Errorf("%s is not owned by the current unprivileged user", role)
+	}
+	return permissionEvidence{Role: role, Mode: fmt.Sprintf("%04o", mode), OwnerCurrentUser: true}, nil
+}
+
+func ownedByCurrentUser(info os.FileInfo) (bool, error) {
+	uid, err := currentUID()
+	if err != nil {
+		return false, err
+	}
+	value := reflect.ValueOf(info.Sys())
+	if value.Kind() == reflect.Pointer {
+		value = value.Elem()
+	}
+	if !value.IsValid() {
+		return false, errors.New("file ownership metadata is unavailable")
+	}
+	field := value.FieldByName("Uid")
+	if !field.IsValid() || !field.CanUint() {
+		return false, errors.New("file UID metadata is unavailable")
+	}
+	return strconv.FormatUint(field.Uint(), 10) == uid, nil
+}
+
+func verifyWindowsACL(ctx context.Context, role, path string) (permissionEvidence, error) {
+	script := fmt.Sprintf(`$acl=Get-Acl -LiteralPath '%s'; $me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $system=New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18'); try{$owner=(New-Object System.Security.Principal.NTAccount($acl.Owner)).Translate([System.Security.Principal.SecurityIdentifier])}catch{exit 1}; $allowMe=$false; $allowSystem=$false; $unexpected=0; foreach($rule in $acl.Access){if($rule.AccessControlType -ne 'Allow'){continue}; try{$sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])}catch{$unexpected++; continue}; if($sid -eq $me){$allowMe=$true}elseif($sid -eq $system){$allowSystem=$true}else{$unexpected++}}; [ordered]@{owner_current_user=($owner -eq $me);acl_current_user=$allowMe;acl_system=$allowSystem;unexpected_allow_count=$unexpected}|ConvertTo-Json -Compress`, psQuote(path))
+	output, err := combinedOutput(ctx, "powershell", "-NoProfile", "-Command", script)
+	if err != nil {
+		return permissionEvidence{}, err
+	}
+	proof := permissionEvidence{Role: role}
+	if err := json.Unmarshal([]byte(output), &proof); err != nil {
+		return permissionEvidence{}, err
+	}
+	proof.Role = role
+	if !proof.OwnerCurrentUser || !proof.ACLCurrentUser || !proof.ACLSystem || proof.UnexpectedAllowCount != 0 {
+		return permissionEvidence{}, errors.New("ACL is not restricted to the current user and SYSTEM")
+	}
+	return proof, nil
 }
 
 func scanForToken(root, token string, allowed map[string]bool) error {
@@ -186,6 +218,9 @@ func remainingRegularFiles(profile string) ([]string, error) {
 	err := filepath.WalkDir(profile, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic link remains in lifecycle profile: %s", filepath.Base(path))
 		}
 		if entry.Type().IsRegular() {
 			relative, err := filepath.Rel(profile, path)

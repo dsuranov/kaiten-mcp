@@ -3,10 +3,12 @@ package nativeci
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -34,7 +36,7 @@ func TestArtifactSetIsSecretFreeAndTracksWrittenFiles(t *testing.T) {
 func TestCaptureHealthWritesExactIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"status":"ok","version":"native-v2","runtime":"go-test"}`))
+		_, _ = fmt.Fprintf(writer, `{"status":"ok","version":"native-v2","runtime":%q}`, runtime.Version())
 	}))
 	defer server.Close()
 
@@ -44,7 +46,7 @@ func TestCaptureHealthWritesExactIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(evidenceDir, "health.json")
-	artifact := healthArtifact{Endpoint: server.URL + "/health", Status: "ok", Version: "native-v2", Runtime: "go-test"}
+	artifact := healthArtifact{Endpoint: server.URL + "/health", Status: "ok", Version: "native-v2", Runtime: runtime.Version()}
 	var decoded healthArtifact
 	data, _ := os.ReadFile(path)
 	if err := json.Unmarshal(data, &decoded); err != nil || decoded != artifact {
