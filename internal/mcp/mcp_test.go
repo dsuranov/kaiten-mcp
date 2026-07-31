@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -241,6 +242,7 @@ func TestStdioInitializationAndReadOnlyTools(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","method":"ping"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
 	}, "\n") + "\n"
 	var output bytes.Buffer
@@ -267,6 +269,201 @@ func TestStdioInitializationAndReadOnlyTools(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &listed); err != nil || len(listed.Result.Tools) != 18 {
 		t.Fatalf("bad tools/list: %v count=%d", err, len(listed.Result.Tools))
 	}
+}
+
+func TestHTTPStatefulSessionLifecycle(t *testing.T) {
+	server, _, _ := testServer(t, false)
+	httpServer := httptest.NewServer(server.HTTPHandler("/mcp"))
+	defer httpServer.Close()
+	endpoint := httpServer.URL + "/mcp"
+
+	status, _, _ := performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`, "", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("pre-initialize request without a session returned %d", status)
+	}
+
+	status, headers, body := performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`, "", "")
+	sessionID := headers.Get("MCP-Session-Id")
+	if status != http.StatusOK || sessionID == "" {
+		t.Fatalf("initialize failed: status=%d session=%q body=%s", status, sessionID, body)
+	}
+
+	status, _, body = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`, sessionID, "2025-06-18")
+	var beforeReady rpcResponse
+	if status != http.StatusOK || json.Unmarshal(body, &beforeReady) != nil || beforeReady.Error == nil || beforeReady.Error.Code != -32002 {
+		t.Fatalf("operation before initialized notification was accepted: status=%d body=%s", status, body)
+	}
+
+	status, _, body = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`, sessionID, "2025-06-18")
+	if status != http.StatusAccepted || len(body) != 0 {
+		t.Fatalf("initialized notification response: status=%d body=%q", status, body)
+	}
+
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`, "", "2025-06-18")
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing session returned %d", status)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}`, "unknown-session", "2025-06-18")
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown session returned %d", status)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{}}`, sessionID, "2099-01-01")
+	if status != http.StatusBadRequest {
+		t.Fatalf("unsupported protocol returned %d", status)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}`, sessionID, "2025-11-25")
+	if status != http.StatusBadRequest {
+		t.Fatalf("mismatched protocol returned %d", status)
+	}
+
+	status, _, body = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","method":"ping"}`, sessionID, "2025-06-18")
+	if status != http.StatusAccepted || len(body) != 0 {
+		t.Fatalf("ping notification produced a response: status=%d body=%q", status, body)
+	}
+	status, _, body = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","method":"unknown/notification"}`, sessionID, "2025-06-18")
+	if status != http.StatusAccepted || len(body) != 0 {
+		t.Fatalf("unknown notification produced a response: status=%d body=%q", status, body)
+	}
+
+	status, _, _ = performMCPRequest(t, http.MethodDelete, endpoint, "", "unknown-session", "2025-06-18")
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown DELETE returned %d", status)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodDelete, endpoint, "", "", "2025-06-18")
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing-session DELETE returned %d", status)
+	}
+	status, _, body = performMCPRequest(t, http.MethodDelete, endpoint, "", sessionID, "2025-06-18")
+	if status != http.StatusNoContent || len(body) != 0 {
+		t.Fatalf("valid DELETE failed: status=%d body=%q", status, body)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":8,"method":"ping"}`, sessionID, "2025-06-18")
+	if status != http.StatusNotFound {
+		t.Fatalf("deleted session was reused: %d", status)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodDelete, endpoint, "", sessionID, "2025-06-18")
+	if status != http.StatusNotFound {
+		t.Fatalf("repeated DELETE returned %d", status)
+	}
+}
+
+func TestHTTPConcurrentSessionsExpireAndCleanUp(t *testing.T) {
+	server, _, _ := testServer(t, false)
+	var clock atomic.Int64
+	clock.Store(time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC).UnixNano())
+	store := newHTTPSessionStore(time.Minute)
+	store.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	server.sessions = store
+	httpServer := httptest.NewServer(server.HTTPHandler("/mcp"))
+	defer httpServer.Close()
+	endpoint := httpServer.URL + "/mcp"
+
+	first := initializeHTTPSession(t, endpoint, 1, "2025-11-25")
+	second := initializeHTTPSession(t, endpoint, 2, "2025-11-25")
+	for _, sessionID := range []string{first, second} {
+		status, _, body := performMCPRequest(t, http.MethodPost, endpoint,
+			`{"jsonrpc":"2.0","method":"notifications/initialized"}`, sessionID, "2025-11-25")
+		if status != http.StatusAccepted || len(body) != 0 {
+			t.Fatalf("could not ready session %q: status=%d body=%q", sessionID, status, body)
+		}
+	}
+
+	var group sync.WaitGroup
+	errors := make(chan string, 24)
+	for index := 0; index < 24; index++ {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			sessionID := first
+			if index%2 == 1 {
+				sessionID = second
+			}
+			status, _, _, err := performMCPRequestRaw(http.MethodPost, endpoint,
+				fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"ping"}`, index+10), sessionID, "2025-11-25")
+			if err != nil || status != http.StatusOK {
+				errors <- fmt.Sprintf("request %d status=%d err=%v", index, status, err)
+			}
+		}(index)
+	}
+	group.Wait()
+	close(errors)
+	for err := range errors {
+		t.Error(err)
+	}
+
+	status, _, _ := performMCPRequest(t, http.MethodDelete, endpoint, "", first, "2025-11-25")
+	if status != http.StatusNoContent {
+		t.Fatalf("first session delete returned %d", status)
+	}
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":50,"method":"ping"}`, second, "2025-11-25")
+	if status != http.StatusOK {
+		t.Fatalf("deleting one session affected another: %d", status)
+	}
+
+	clock.Add(int64(2 * time.Minute))
+	status, _, _ = performMCPRequest(t, http.MethodPost, endpoint,
+		`{"jsonrpc":"2.0","id":51,"method":"ping"}`, second, "2025-11-25")
+	if status != http.StatusNotFound || store.count() != 0 {
+		t.Fatalf("expired session was retained: status=%d count=%d", status, store.count())
+	}
+}
+
+func initializeHTTPSession(t *testing.T, endpoint string, id int, protocol string) string {
+	t.Helper()
+	status, headers, body := performMCPRequest(t, http.MethodPost, endpoint,
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"initialize","params":{"protocolVersion":%q}}`, id, protocol), "", "")
+	if status != http.StatusOK || headers.Get("MCP-Session-Id") == "" {
+		t.Fatalf("initialize failed: status=%d headers=%v body=%s", status, headers, body)
+	}
+	return headers.Get("MCP-Session-Id")
+}
+
+func performMCPRequest(t *testing.T, method, endpoint, body, sessionID, protocol string) (int, http.Header, []byte) {
+	t.Helper()
+	status, headers, payload, err := performMCPRequestRaw(method, endpoint, body, sessionID, protocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status, headers, payload
+}
+
+func performMCPRequestRaw(method, endpoint, body, sessionID, protocol string) (int, http.Header, []byte, error) {
+	request, err := http.NewRequest(method, endpoint, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if sessionID != "" {
+		request.Header.Set("MCP-Session-Id", sessionID)
+	}
+	if protocol != "" {
+		request.Header.Set("MCP-Protocol-Version", protocol)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	return response.StatusCode, response.Header.Clone(), payload, nil
 }
 
 func TestStreamableHTTPInitializationHealthAndShutdown(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dsuranov/kaiten-mcp/internal/api"
@@ -21,7 +22,12 @@ import (
 	"github.com/dsuranov/kaiten-mcp/internal/version"
 )
 
-const fallbackProtocolVersion = "2025-06-18"
+const (
+	fallbackProtocolVersion = "2025-06-18"
+	defaultHTTPSessionTTL   = 30 * time.Minute
+)
+
+var supportedProtocolVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -47,18 +53,22 @@ type rpcError struct {
 type Server struct {
 	service      *api.Service
 	writeEnabled bool
+	sessions     *httpSessionStore
 }
 
 func NewServer(cfg config.Config) *Server {
-	return &Server{service: api.NewService(api.New(cfg)), writeEnabled: cfg.EnableWriteTools}
+	return &Server{
+		service: api.NewService(api.New(cfg)), writeEnabled: cfg.EnableWriteTools,
+		sessions: newHTTPSessionStore(defaultHTTPSessionTTL),
+	}
 }
 
 func (s *Server) handle(ctx context.Context, request rpcRequest) *rpcResponse {
+	if len(request.ID) == 0 && request.Method != "" {
+		return nil
+	}
 	if request.JSONRPC != "2.0" || request.Method == "" {
 		return errorResponse(request.ID, -32600, "invalid JSON-RPC request", nil)
-	}
-	if strings.HasPrefix(request.Method, "notifications/") {
-		return nil
 	}
 	switch request.Method {
 	case "initialize":
@@ -227,45 +237,140 @@ func (s *Server) HTTPHandler(path string) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": version.String(), "runtime": runtime.Version()})
 	})
-	mux.HandleFunc(path, func(w http.ResponseWriter, request *http.Request) {
-		if !validOrigin(request) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "origin is not allowed"})
+	mux.HandleFunc(path, s.handleHTTPEndpoint)
+	return mux
+}
+
+func (s *Server) handleHTTPEndpoint(writer http.ResponseWriter, request *http.Request) {
+	if !validOrigin(request) {
+		writeHTTPError(writer, http.StatusForbidden, "origin is not allowed")
+		return
+	}
+	protocolHeader := strings.TrimSpace(request.Header.Get("MCP-Protocol-Version"))
+	if protocolHeader != "" && !isSupportedProtocol(protocolHeader) {
+		writeHTTPError(writer, http.StatusBadRequest, "MCP-Protocol-Version is unsupported")
+		return
+	}
+	switch request.Method {
+	case http.MethodPost:
+		s.handleHTTPPost(writer, request, protocolHeader)
+	case http.MethodDelete:
+		s.handleHTTPDelete(writer, request, protocolHeader)
+	case http.MethodGet:
+		if _, ok := s.requireHTTPSession(writer, request, protocolHeader); !ok {
 			return
 		}
-		switch request.Method {
-		case http.MethodPost:
-			accept := request.Header.Get("Accept")
-			if accept != "" && !strings.Contains(accept, "application/json") && !strings.Contains(accept, "*/*") {
-				writeJSON(w, http.StatusNotAcceptable, map[string]any{"error": "Accept must allow application/json"})
-				return
-			}
-			defer request.Body.Close()
-			decoder := json.NewDecoder(io.LimitReader(request.Body, 16*1024*1024))
-			var message rpcRequest
-			if err := decoder.Decode(&message); err != nil {
-				writeJSON(w, http.StatusBadRequest, errorResponse(nil, -32700, "parse error", nil))
-				return
-			}
-			response := s.handle(request.Context(), message)
-			if message.Method == "initialize" {
-				w.Header().Set("Mcp-Session-Id", newSessionID())
-			}
-			if response == nil {
-				w.WriteHeader(http.StatusAccepted)
-				return
-			}
-			writeJSON(w, http.StatusOK, response)
-		case http.MethodDelete:
-			w.WriteHeader(http.StatusNoContent)
-		case http.MethodGet:
-			w.Header().Set("Allow", "POST, DELETE")
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "server notifications are not enabled"})
-		default:
-			w.Header().Set("Allow", "POST, DELETE")
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		writer.Header().Set("Allow", "POST, DELETE")
+		writeHTTPError(writer, http.StatusMethodNotAllowed, "server notifications are not enabled")
+	default:
+		writer.Header().Set("Allow", "POST, GET, DELETE")
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleHTTPPost(writer http.ResponseWriter, request *http.Request, protocolHeader string) {
+	accept := request.Header.Get("Accept")
+	if accept != "" && !strings.Contains(accept, "application/json") && !strings.Contains(accept, "*/*") {
+		writeHTTPError(writer, http.StatusNotAcceptable, "Accept must allow application/json")
+		return
+	}
+	defer request.Body.Close()
+	decoder := json.NewDecoder(io.LimitReader(request.Body, 16*1024*1024))
+	var message rpcRequest
+	if err := decoder.Decode(&message); err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse(nil, -32700, "parse error", nil))
+		return
+	}
+	if message.Method == "initialize" {
+		if request.Header.Get("MCP-Session-Id") != "" {
+			writeHTTPError(writer, http.StatusBadRequest, "initialize must not include MCP-Session-Id")
+			return
 		}
-	})
-	return mux
+		if len(message.ID) == 0 {
+			writeHTTPError(writer, http.StatusBadRequest, "initialize must be a JSON-RPC request")
+			return
+		}
+		response := s.handle(request.Context(), message)
+		if response == nil {
+			writeHTTPError(writer, http.StatusBadRequest, "initialize was not accepted")
+			return
+		}
+		if response.Error == nil {
+			protocol := protocolFromInitialize(message.Params)
+			sessionID, err := s.sessions.create(negotiateProtocol(protocol))
+			if err != nil {
+				writeHTTPError(writer, http.StatusInternalServerError, "could not create MCP session")
+				return
+			}
+			writer.Header().Set("MCP-Session-Id", sessionID)
+		}
+		writeJSON(writer, http.StatusOK, response)
+		return
+	}
+
+	session, ok := s.requireHTTPSession(writer, request, protocolHeader)
+	if !ok {
+		return
+	}
+	notification := len(message.ID) == 0
+	if message.Method == "notifications/initialized" {
+		if !notification || session.ready || !s.sessions.markReady(session.id) {
+			writeHTTPError(writer, http.StatusBadRequest, "MCP session initialization state is invalid")
+			return
+		}
+		writer.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if !session.ready && message.Method != "ping" {
+		if notification {
+			writeHTTPError(writer, http.StatusBadRequest, "MCP session is not initialized")
+			return
+		}
+		writeJSON(writer, http.StatusOK, errorResponse(message.ID, -32002, "MCP session is not initialized", nil))
+		return
+	}
+	response := s.handle(request.Context(), message)
+	if notification {
+		writer.WriteHeader(http.StatusAccepted)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (s *Server) handleHTTPDelete(writer http.ResponseWriter, request *http.Request, protocolHeader string) {
+	session, ok := s.requireHTTPSession(writer, request, protocolHeader)
+	if !ok {
+		return
+	}
+	if !s.sessions.delete(session.id) {
+		writeHTTPError(writer, http.StatusNotFound, "MCP session was not found")
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+type httpSessionView struct {
+	id       string
+	protocol string
+	ready    bool
+}
+
+func (s *Server) requireHTTPSession(writer http.ResponseWriter, request *http.Request, protocolHeader string) (httpSessionView, bool) {
+	sessionID := strings.TrimSpace(request.Header.Get("MCP-Session-Id"))
+	if sessionID == "" {
+		writeHTTPError(writer, http.StatusBadRequest, "MCP-Session-Id is required")
+		return httpSessionView{}, false
+	}
+	session, ok := s.sessions.get(sessionID)
+	if !ok {
+		writeHTTPError(writer, http.StatusNotFound, "MCP session was not found")
+		return httpSessionView{}, false
+	}
+	if protocolHeader != "" && protocolHeader != session.protocol {
+		writeHTTPError(writer, http.StatusBadRequest, "MCP-Protocol-Version does not match the session")
+		return httpSessionView{}, false
+	}
+	return session, true
 }
 
 func validOrigin(request *http.Request) bool {
@@ -291,22 +396,129 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
-func newSessionID() string {
+func writeHTTPError(writer http.ResponseWriter, status int, message string) {
+	writeJSON(writer, status, map[string]any{"error": message})
+}
+
+func newSessionID() (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
-		return fmt.Sprintf("session-%d", time.Now().UnixNano())
+		return "", err
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
 
 func negotiateProtocol(requested string) string {
-	supported := []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
-	for _, version := range supported {
+	for _, version := range supportedProtocolVersions {
 		if requested == version {
 			return version
 		}
 	}
 	return fallbackProtocolVersion
+}
+
+func isSupportedProtocol(protocol string) bool {
+	for _, supported := range supportedProtocolVersions {
+		if protocol == supported {
+			return true
+		}
+	}
+	return false
+}
+
+func protocolFromInitialize(params json.RawMessage) string {
+	var input struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	_ = json.Unmarshal(params, &input)
+	return strings.TrimSpace(input.ProtocolVersion)
+}
+
+type httpSession struct {
+	protocol  string
+	ready     bool
+	expiresAt time.Time
+}
+
+type httpSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]*httpSession
+	ttl      time.Duration
+	now      func() time.Time
+}
+
+func newHTTPSessionStore(ttl time.Duration) *httpSessionStore {
+	return &httpSessionStore{sessions: make(map[string]*httpSession), ttl: ttl, now: time.Now}
+}
+
+func (s *httpSessionStore) create(protocol string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked()
+	for attempts := 0; attempts < 4; attempts++ {
+		id, err := newSessionID()
+		if err != nil {
+			return "", err
+		}
+		if _, exists := s.sessions[id]; exists {
+			continue
+		}
+		s.sessions[id] = &httpSession{protocol: protocol, expiresAt: s.now().Add(s.ttl)}
+		return id, nil
+	}
+	return "", errors.New("could not allocate unique MCP session ID")
+}
+
+func (s *httpSessionStore) get(id string) (httpSessionView, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked()
+	session, ok := s.sessions[id]
+	if !ok {
+		return httpSessionView{}, false
+	}
+	session.expiresAt = s.now().Add(s.ttl)
+	return httpSessionView{id: id, protocol: session.protocol, ready: session.ready}, true
+}
+
+func (s *httpSessionStore) markReady(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked()
+	session, ok := s.sessions[id]
+	if !ok || session.ready {
+		return false
+	}
+	session.ready = true
+	session.expiresAt = s.now().Add(s.ttl)
+	return true
+}
+
+func (s *httpSessionStore) delete(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked()
+	if _, ok := s.sessions[id]; !ok {
+		return false
+	}
+	delete(s.sessions, id)
+	return true
+}
+
+func (s *httpSessionStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked()
+	return len(s.sessions)
+}
+
+func (s *httpSessionStore) cleanupLocked() {
+	now := s.now()
+	for id, session := range s.sessions {
+		if !session.expiresAt.After(now) {
+			delete(s.sessions, id)
+		}
+	}
 }
 
 // ServeHTTP binds, serves, and shuts down gracefully when the context ends.
