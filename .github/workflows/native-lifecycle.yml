@@ -53,7 +53,7 @@ jobs:
           [[ "$WORKFLOW_REF" =~ ^refs/tags/v[0-9][0-9A-Za-z.+-]*$ ]]
 
       - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.expected_sha }}
           persist-credentials: false
@@ -66,7 +66,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends dbus-user-session
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.5"
           check-latest: false
@@ -133,7 +133,7 @@ jobs:
 
       - name: Upload native lifecycle evidence
         if: ${{ always() && steps.sanitize.outcome == 'success' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-lifecycle-${{ matrix.id }}
           path: ${{ runner.temp }}/native-lifecycle-evidence/
