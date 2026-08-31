@@ -81,7 +81,7 @@ jobs:
           "$RUNNER_TEMP/security-tools/govulncheck" -version
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           syft-version: v1.50.0
 
@@ -180,7 +180,7 @@ jobs:
           path: dist
 
       - name: Attest checksum manifest
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-checksums: ./dist/checksums.txt
 
